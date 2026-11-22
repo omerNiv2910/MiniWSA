@@ -1,4 +1,7 @@
 spring:
+  mvc:
+    problemdetails:
+      enabled: true
   application:
     name: miniwsa
   kafka:
@@ -25,6 +28,8 @@ miniwsa:
   topics:
     raw: dlr.events.raw
     dlq: dlr.events.dlq
+  ingest:
+    max-batch-size: 1000
 
 management:
   endpoints:
