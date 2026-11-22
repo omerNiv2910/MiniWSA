@@ -1,5 +1,6 @@
 package com.miniwsa.api;
 
+import com.miniwsa.ingest.EventPublishException;
 import org.springframework.context.MessageSourceResolvable;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -12,6 +13,7 @@ import org.springframework.validation.ObjectError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.validation.method.ParameterErrors;
 import org.springframework.validation.method.ParameterValidationResult;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
@@ -37,6 +39,9 @@ import java.util.stream.Collectors;
  */
 @RestControllerAdvice
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
+
+    /** Sent with a 503 so clients back off briefly before retrying. */
+    private static final String RETRY_AFTER_SECONDS = "5";
 
     /** Bean validation failures on list elements, e.g. a missing {@code clientIp} in event 3. */
     @Override
@@ -106,6 +111,21 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 : parseMessage(je);
         return badRequest(ex, "Request contains invalid events",
                 List.of(new EventError(index, field, message)), headers, request);
+    }
+
+    /**
+     * Kafka did not take the whole batch. Some events may already be written, so the client should
+     * retry the whole request; storage is idempotent on {@code eventId}. Returned as 503 because it
+     * is a temporary problem on our side, not something wrong with the request.
+     */
+    @ExceptionHandler(EventPublishException.class)
+    ResponseEntity<ProblemDetail> handleEventPublish(EventPublishException ex) {
+        logger.warn("Ingest failed: " + ex.getMessage(), ex);
+        ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                "Events could not be stored right now; retry the whole request");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS)
+                .body(body);
     }
 
     private ResponseEntity<Object> badRequest(Exception ex, String detail, List<EventError> errors,

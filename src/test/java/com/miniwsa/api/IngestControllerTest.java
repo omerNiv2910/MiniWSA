@@ -1,5 +1,6 @@
 package com.miniwsa.api;
 
+import com.miniwsa.ingest.EventPublishException;
 import com.miniwsa.ingest.IngestService;
 import com.miniwsa.model.SecurityEvent;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,6 +22,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -230,6 +233,19 @@ class IngestControllerTest {
         mvc.perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content("[{ not json"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.detail").value("Request body is not valid JSON"));
+    }
+
+    @Test
+    void kafkaFailureIsServiceUnavailable() throws Exception {
+        when(ingestService.ingest(anyList()))
+                .thenThrow(new EventPublishException("Kafka did not accept all events", new RuntimeException("boom")));
+
+        mvc.perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content(array(EVENT)))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "5"))
+                .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(503))
+                .andExpect(jsonPath("$.detail").value("Events could not be stored right now; retry the whole request"));
     }
 
     private static String array(String... events) {
