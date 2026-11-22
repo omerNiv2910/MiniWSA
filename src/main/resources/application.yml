@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: miniwsa
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+    consumer:
+      group-id: miniwsa-workers
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      ack-mode: manual
+      type: batch
+  mongodb:
+    uri: ${MONGODB_URI:mongodb://localhost:27017/miniwsa}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+miniwsa:
+  topics:
+    raw: dlr.events.raw
+    dlq: dlr.events.dlq
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
