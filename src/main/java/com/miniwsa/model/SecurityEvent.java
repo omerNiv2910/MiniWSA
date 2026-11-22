@@ -27,7 +27,7 @@ import java.time.Instant;
  * <p>{@code receivedAt} is set by the server, never by the client: Jackson ignores it on input
  * ({@code READ_ONLY}) and the ingest layer stamps it with {@link #withReceivedAt(Instant)}.
  */
-public record SecurityEventDto(
+public record SecurityEvent(
         @NotBlank @Size(max = 128) String eventId,
         @NotNull Instant timestamp,
         @NotNull @Positive Long configId,
@@ -64,8 +64,8 @@ public record SecurityEventDto(
     }
 
     /** Returns a copy of this event stamped with the server-side receive time. */
-    public SecurityEventDto withReceivedAt(Instant receivedAt) {
-        return new SecurityEventDto(eventId, timestamp, configId, policyId, clientIp, hostname, path,
+    public SecurityEvent withReceivedAt(Instant receivedAt) {
+        return new SecurityEvent(eventId, timestamp, configId, policyId, clientIp, hostname, path,
                 method, statusCode, userAgent, rule, action, geoLocation, requestSize, responseSize,
                 receivedAt);
     }

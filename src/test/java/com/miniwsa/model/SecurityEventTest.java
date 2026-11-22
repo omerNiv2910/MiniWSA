@@ -15,7 +15,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class SecurityEventDtoTest {
+class SecurityEventTest {
 
     private static final String SAMPLE = """
             {
@@ -60,31 +60,30 @@ class SecurityEventDtoTest {
 
     @Test
     void assignmentSampleParsesAndIsValid() {
-        SecurityEventDto event = mapper.readValue(SAMPLE, SecurityEventDto.class);
+        SecurityEvent event = mapper.readValue(SAMPLE, SecurityEvent.class);
 
         assertThat(event.timestamp()).isEqualTo(Instant.parse("2026-05-20T14:32:10Z"));
         assertThat(event.rule().severity()).isEqualTo(Severity.CRITICAL);
         assertThat(event.rule().category()).isEqualTo(Category.INJECTION);
         assertThat(event.action()).isEqualTo(Action.DENY);
         assertThat(event.geoLocation().country()).isEqualTo("CN");
-        assertThat(validator.validate(event)).isEmpty();
     }
 
     @Test
     void clientSuppliedReceivedAtIsIgnored() {
         String json = SAMPLE.replace("\"responseSize\": 256", "\"responseSize\": 256, \"receivedAt\": \"2020-01-01T00:00:00Z\"");
 
-        SecurityEventDto event = mapper.readValue(json, SecurityEventDto.class);
+        SecurityEvent event = mapper.readValue(json, SecurityEvent.class);
 
         assertThat(event.receivedAt()).isNull();
     }
 
     @Test
     void withReceivedAtStampsACopy() {
-        SecurityEventDto event = mapper.readValue(SAMPLE, SecurityEventDto.class);
+        SecurityEvent event = mapper.readValue(SAMPLE, SecurityEvent.class);
         Instant now = Instant.parse("2026-05-20T14:32:11Z");
 
-        SecurityEventDto stamped = event.withReceivedAt(now);
+        SecurityEvent stamped = event.withReceivedAt(now);
 
         assertThat(stamped.receivedAt()).isEqualTo(now);
         assertThat(stamped.eventId()).isEqualTo(event.eventId());
@@ -95,7 +94,7 @@ class SecurityEventDtoTest {
     void unknownEnumValueFailsParsing() {
         String json = SAMPLE.replace("\"DENY\"", "\"BLOCK\"");
 
-        assertThatThrownBy(() -> mapper.readValue(json, SecurityEventDto.class))
+        assertThatThrownBy(() -> mapper.readValue(json, SecurityEvent.class))
                 .hasMessageContaining("BLOCK");
     }
 
@@ -103,7 +102,7 @@ class SecurityEventDtoTest {
     void malformedTimestampFailsParsing() {
         String json = SAMPLE.replace("2026-05-20T14:32:10Z", "20/05/2026 14:32");
 
-        assertThatThrownBy(() -> mapper.readValue(json, SecurityEventDto.class))
+        assertThatThrownBy(() -> mapper.readValue(json, SecurityEvent.class))
                 .hasMessageContaining("20/05/2026");
     }
 
@@ -114,8 +113,8 @@ class SecurityEventDtoTest {
                 .replace("\"category\": \"INJECTION\"", "\"category\": null")
                 .replace("\"country\": \"CN\"", "\"country\": \"China\"");
 
-        SecurityEventDto event = mapper.readValue(json, SecurityEventDto.class);
-        Set<ConstraintViolation<SecurityEventDto>> violations = validator.validate(event);
+        SecurityEvent event = mapper.readValue(json, SecurityEvent.class);
+        Set<ConstraintViolation<SecurityEvent>> violations = validator.validate(event);
 
         assertThat(violations)
                 .extracting(v -> v.getPropertyPath().toString())

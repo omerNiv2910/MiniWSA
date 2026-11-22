@@ -12,7 +12,7 @@ Mini Security Analytics Pipeline: a Spring Boot service that ingests security ev
 
 | Package | Responsibility |
 |---|---|
-| `model` | Security event DTO and its enums, shared by every stage |
+| `model` | Security event model and its enums, shared by every stage |
 | `api` | REST controllers and response DTOs |
 | `ingest` | Validation and producing to Kafka |
 | `consumer` | Kafka batch consumers and DLQ routing |
