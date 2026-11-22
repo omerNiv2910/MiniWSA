@@ -1,12 +1,27 @@
 spring:
+  mvc:
+    problemdetails:
+      enabled: true
   application:
     name: miniwsa
+  jackson:
+    deserialization:
+      # Lets POST /v1/events/ingest take a bare event object as a one-event batch.
+      accept-single-value-as-array: true
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
       properties:
         enable.idempotence: true
+        # Plain JSON on the wire, no Java class name in the record headers.
+        spring.json.add.type.headers: false
+        # Fail fast instead of holding an ingest request for the 60s/120s defaults.
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
     consumer:
       group-id: miniwsa-workers
       auto-offset-reset: earliest
@@ -25,6 +40,9 @@ miniwsa:
   topics:
     raw: dlr.events.raw
     dlq: dlr.events.dlq
+  ingest:
+    # Above delivery.timeout.ms, so the producer reports its own error first.
+    send-timeout: 12s
 
 management:
   endpoints:
