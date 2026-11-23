@@ -55,7 +55,7 @@ class EventStoreTest {
                 new SecurityEvent.Rule("950001", "SQL_INJECTION", "SQL Injection Attack Detected",
                         Severity.CRITICAL, Category.INJECTION),
                 Action.DENY, new SecurityEvent.GeoLocation("CN", "Beijing"), 1024L, 256L,
-                Instant.parse("2026-05-20T14:32:11Z"));
+                Instant.parse("2026-05-20T14:32:11Z"), "SQL/Command Injection", 75);
 
         store.saveBatch(List.of(event));
 
@@ -73,7 +73,9 @@ class EventStoreTest {
                 .containsEntry("geo_country", "CN")
                 .containsEntry("geo_city", "Beijing")
                 .containsEntry("request_size", 1024L)
-                .containsEntry("response_size", 256L);
+                .containsEntry("response_size", 256L)
+                .containsEntry("attack_type", "SQL/Command Injection")
+                .containsEntry("threat_score", 75);
         assertThat(instant("SELECT timestamp FROM events")).isEqualTo(Instant.parse("2026-05-20T14:32:10Z"));
         assertThat(instant("SELECT received_at FROM events")).isEqualTo(Instant.parse("2026-05-20T14:32:11Z"));
     }
@@ -86,6 +88,57 @@ class EventStoreTest {
         assertThat(row).containsEntry("geo_country", null)
                 .containsEntry("request_size", null)
                 .containsEntry("user_agent", null);
+    }
+
+    @Test
+    void storesAnUnenrichedEventWithNullAttackTypeAndScore() {
+        store.saveBatch(List.of(event("evt-1", 14227L, "2026-05-20T14:32:10Z", Category.BOT, Severity.LOW, Action.MONITOR)));
+
+        Map<String, Object> row = jdbc.queryForMap("SELECT * FROM events WHERE event_id = 'evt-1'");
+        assertThat(row).containsEntry("attack_type", null).containsEntry("threat_score", null);
+    }
+
+    @Test
+    void scoreBoundsAreAccepted() {
+        store.saveBatch(List.of(scored("evt-0", 0), scored("evt-100", 100)));
+
+        assertThat(jdbc.queryForList("SELECT threat_score FROM events ORDER BY threat_score", Integer.class))
+                .containsExactly(0, 100);
+    }
+
+    @Test
+    void scoreOutsideTheRangeIsRejectedAndNothingIsStored() {
+        assertThatThrownBy(() -> store.saveBatch(List.of(scored("evt-1", 50), scored("evt-2", 101))))
+                .isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> store.saveBatch(List.of(scored("evt-3", -1))))
+                .isInstanceOf(RuntimeException.class);
+
+        assertThat(storedIds()).isEmpty();
+    }
+
+    @Test
+    void longestAttackTypeFitsTheColumn() {
+        SecurityEvent event = event("evt-1", 14227L, "2026-05-20T14:32:10Z", Category.INJECTION, Severity.LOW, Action.DENY);
+        event.setAttackType("SQL/Command Injection");
+
+        store.saveBatch(List.of(event));
+
+        assertThat(jdbc.queryForObject("SELECT attack_type FROM events", String.class)).isEqualTo("SQL/Command Injection");
+    }
+
+    @Test
+    void redeliveredEventKeepsTheFirstStoredScore() {
+        store.saveBatch(List.of(scored("evt-1", 30)));
+        store.saveBatch(List.of(scored("evt-1", 90)));
+
+        assertThat(jdbc.queryForObject("SELECT threat_score FROM events", Integer.class)).isEqualTo(30);
+    }
+
+    private static SecurityEvent scored(String id, int score) {
+        SecurityEvent event = event(id, 14227L, "2026-05-20T14:32:10Z", Category.BOT, Severity.LOW, Action.DENY);
+        event.setAttackType("Bot Activity");
+        event.setThreatScore(score);
+        return event;
     }
 
     @Test
@@ -118,7 +171,7 @@ class EventStoreTest {
         SecurityEvent bad = new SecurityEvent("evt-2", Instant.parse("2026-05-20T14:32:20Z"), 14227L, null,
                 "203.0.113.42", "www.example.com", "/" + "x".repeat(3000), "GET", 403, null,
                 new SecurityEvent.Rule("1", "R", null, Severity.LOW, Category.BOT), Action.DENY,
-                null, null, null, Instant.parse("2026-05-20T14:32:21Z"));
+                null, null, null, Instant.parse("2026-05-20T14:32:21Z"), null, null);
 
         assertThatThrownBy(() -> store.saveBatch(List.of(good, bad))).isInstanceOf(RuntimeException.class);
         assertThat(storedIds()).isEmpty();
@@ -140,6 +193,6 @@ class EventStoreTest {
         return new SecurityEvent(id, Instant.parse(timestamp), configId, "pol_web1",
                 "203.0.113.42", "www.example.com", "/api/v1/login", "POST", 403, null,
                 new SecurityEvent.Rule("950001", "RULE", null, severity, category),
-                action, null, null, null, Instant.parse("2026-05-20T14:32:11Z"));
+                action, null, null, null, Instant.parse("2026-05-20T14:32:11Z"), null, null);
     }
 }
