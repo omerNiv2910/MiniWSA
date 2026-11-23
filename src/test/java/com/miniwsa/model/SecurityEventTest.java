@@ -79,15 +79,97 @@ class SecurityEventTest {
     }
 
     @Test
-    void withReceivedAtStampsACopy() {
+    void setReceivedAtStampsTheEventInPlace() {
         SecurityEvent event = mapper.readValue(SAMPLE, SecurityEvent.class);
         Instant now = Instant.parse("2026-05-20T14:32:11Z");
 
-        SecurityEvent stamped = event.withReceivedAt(now);
+        event.setReceivedAt(now);
 
-        assertThat(stamped.receivedAt()).isEqualTo(now);
-        assertThat(stamped.eventId()).isEqualTo(event.eventId());
-        assertThat(event.receivedAt()).isNull();
+        assertThat(event.receivedAt()).isEqualTo(now);
+        assertThat(event.eventId()).isEqualTo("evt-00132");
+        assertThat(event.attackType()).isNull();
+        assertThat(event.threatScore()).isNull();
+    }
+
+    @Test
+    void clientSuppliedEnrichmentIsIgnored() {
+        String json = SAMPLE.replace("\"responseSize\": 256",
+                "\"responseSize\": 256, \"attackType\": \"x\", \"threatScore\": 99");
+
+        SecurityEvent event = mapper.readValue(json, SecurityEvent.class);
+
+        assertThat(event.attackType()).isNull();
+        assertThat(event.threatScore()).isNull();
+    }
+
+    @Test
+    void clientSuppliedEnrichmentOfTheWrongTypeIsAlsoIgnored() {
+        String json = SAMPLE.replace("\"responseSize\": 256",
+                "\"responseSize\": 256, \"attackType\": 7, \"threatScore\": \"abc\"");
+
+        SecurityEvent event = mapper.readValue(json, SecurityEvent.class);
+
+        assertThat(event.threatScore()).isNull();
+        assertThat(event.attackType()).isNull();
+    }
+
+    @Test
+    void unenrichedEventIsValid() {
+        SecurityEvent event = mapper.readValue(SAMPLE, SecurityEvent.class);
+
+        assertThat(validator.validate(event)).isEmpty();
+    }
+
+    @Test
+    void settersChangeOnlyTheEnrichmentFieldsInPlace() {
+        Instant now = Instant.parse("2026-05-20T14:32:11Z");
+        SecurityEvent event = mapper.readValue(SAMPLE, SecurityEvent.class);
+        event.setReceivedAt(now);
+
+        event.setAttackType("SQL/Command Injection");
+        event.setThreatScore(75);
+
+        assertThat(event.attackType()).isEqualTo("SQL/Command Injection");
+        assertThat(event.threatScore()).isEqualTo(75);
+        assertThat(event.receivedAt()).isEqualTo(now);
+        assertThat(event.eventId()).isEqualTo("evt-00132");
+    }
+
+    @Test
+    void enrichmentFieldsCanBeSetBackToNull() {
+        SecurityEvent event = mapper.readValue(SAMPLE, SecurityEvent.class);
+        event.setAttackType("Bot Activity");
+        event.setThreatScore(30);
+
+        event.setAttackType(null);
+        event.setThreatScore(null);
+
+        assertThat(event.attackType()).isNull();
+        assertThat(event.threatScore()).isNull();
+    }
+
+    @Test
+    void jsonLeavesOutEnrichmentUntilItIsSet() {
+        SecurityEvent event = mapper.readValue(SAMPLE, SecurityEvent.class);
+
+        assertThat(mapper.writeValueAsString(event)).doesNotContain("attackType").doesNotContain("threatScore");
+
+        event.setAttackType("SQL/Command Injection");
+        event.setThreatScore(75);
+        assertThat(mapper.writeValueAsString(event))
+                .contains("\"attackType\":\"SQL/Command Injection\"")
+                .contains("\"threatScore\":75");
+    }
+
+    @Test
+    void jsonKeepsTheFieldNamesAndOrder() {
+        SecurityEvent event = mapper.readValue(SAMPLE, SecurityEvent.class);
+
+        assertThat(mapper.writeValueAsString(event))
+                .startsWith("{\"eventId\":\"evt-00132\",\"timestamp\":")
+                .contains("\"rule\":{\"id\":\"950001\"")
+                .contains("\"geoLocation\":{\"country\":\"CN\",\"city\":\"Beijing\"}")
+                .contains("\"receivedAt\":null");
     }
 
     @Test
