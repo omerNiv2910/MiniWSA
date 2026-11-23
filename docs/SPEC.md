@@ -39,6 +39,10 @@ before the current one (so the 6th+ event in the window gets the bonus).
 
 Store original fields + `attackType`, `threatScore`, `receivedAt`.
 
+**DECISION:** all three server-set fields are filled in by the queue consumer, not at ingest.
+`receivedAt` is the time the consumer handles the batch (the same for the whole batch); a retried
+batch is stamped again with the retry time. Ingest only validates and queues.
+
 ## 3. Stats - `GET /v1/stats/summary?configId&from&to`
 
 `configId, timeRange, totalEvents, byCategory{count, avgThreatScore}, byAction, topAttackers[10]
