@@ -7,11 +7,8 @@ import com.miniwsa.model.Severity;
 import com.miniwsa.queue.EventQueue;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import tools.jackson.databind.json.JsonMapper;
 
-import java.time.Clock;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -23,28 +20,36 @@ import static org.mockito.Mockito.verify;
 
 class IngestServiceTest {
 
-    private static final Instant NOW = Instant.parse("2026-05-20T14:32:11Z");
-
     private final EventQueue queue = mock(EventQueue.class);
-    private final IngestService service = new IngestService(queue, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final IngestService service = new IngestService(queue);
 
     @Test
-    void stampsEveryEventWithTheReceiveTime() {
-        List<SecurityEvent> result = service.ingest(List.of(event("evt-1"), event("evt-2")));
-
-        assertThat(result).extracting(SecurityEvent::receivedAt).containsOnly(NOW);
-        assertThat(result).extracting(SecurityEvent::eventId).containsExactly("evt-1", "evt-2");
+    void returnsHowManyEventsWereQueued() {
+        assertThat(service.ingest(List.of(event("evt-1"), event("evt-2")))).isEqualTo(2);
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void queuesTheStampedEventsAsOneBatch() {
-        service.ingest(List.of(event("evt-1"), event("evt-2")));
+    void queuesTheSameEventObjectsAsOneBatch() {
+        List<SecurityEvent> events = List.of(event("evt-1"), event("evt-2"));
+
+        service.ingest(events);
 
         ArgumentCaptor<List<SecurityEvent>> queued = ArgumentCaptor.forClass(List.class);
         verify(queue).publish(queued.capture());
-        assertThat(queued.getValue()).extracting(SecurityEvent::eventId).containsExactly("evt-1", "evt-2");
-        assertThat(queued.getValue()).extracting(SecurityEvent::receivedAt).containsOnly(NOW);
+        assertThat(queued.getValue()).isSameAs(events);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void setsNoServerFieldsBeforePublishing() {
+        service.ingest(List.of(event("evt-1")));
+
+        ArgumentCaptor<List<SecurityEvent>> queued = ArgumentCaptor.forClass(List.class);
+        verify(queue).publish(queued.capture());
+        assertThat(queued.getValue()).extracting(SecurityEvent::receivedAt).containsOnlyNulls();
+        assertThat(queued.getValue()).extracting(SecurityEvent::attackType).containsOnlyNulls();
+        assertThat(queued.getValue()).extracting(SecurityEvent::threatScore).containsOnlyNulls();
     }
 
     @Test
@@ -55,18 +60,10 @@ class IngestServiceTest {
                 .isInstanceOf(EventPublishException.class);
     }
 
-    @Test
-    void jsonIncludesTheServerReceiveTime() {
-        String json = JsonMapper.builder().build()
-                .writeValueAsString(event("evt-1").withReceivedAt(NOW));
-
-        assertThat(json).contains("\"eventId\":\"evt-1\"").contains("\"receivedAt\"");
-    }
-
     private static SecurityEvent event(String id) {
         return new SecurityEvent(id, Instant.parse("2026-05-20T14:32:10Z"), 14227L, "pol_web1",
                 "203.0.113.42", "www.example.com", "/api/v1/login", "POST", 403, null,
                 new SecurityEvent.Rule("950001", "SQL_INJECTION", null, Severity.CRITICAL, Category.INJECTION),
-                Action.DENY, null, null, null, null);
+                Action.DENY, null, null, null, null, null, null);
     }
 }

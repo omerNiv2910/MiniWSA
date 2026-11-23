@@ -1,18 +1,22 @@
 package com.miniwsa.api;
 
-import com.miniwsa.model.SecurityEvent;
-
-import java.util.List;
+import org.springframework.http.HttpStatus;
 
 /**
- * Body of a successful ingest response.
+ * Body of a successful ({@code 201 Created}) ingest response.
  *
- * @param accepted how many events were accepted
- * @param events   the accepted events as queued, including the server-set {@code receivedAt}
+ * <p>The events themselves are not echoed back: they are enriched later by the queue consumer, so the
+ * copy the client would get is not the stored result anyway.
+ *
+ * @param status   the HTTP status code, repeated in the body like the {@code status} of error responses
+ * @param message  human-readable confirmation
+ * @param accepted how many events were accepted and queued
  */
-public record IngestResponse(int accepted, List<SecurityEvent> events) {
+public record IngestResponse(int status, String message, int accepted) {
 
-    public static IngestResponse of(List<SecurityEvent> events) {
-        return new IngestResponse(events.size(), events);
+    static final String SUCCESS_MESSAGE = "Events accepted for processing";
+
+    public static IngestResponse of(int accepted) {
+        return new IngestResponse(HttpStatus.CREATED.value(), SUCCESS_MESSAGE, accepted);
     }
 }

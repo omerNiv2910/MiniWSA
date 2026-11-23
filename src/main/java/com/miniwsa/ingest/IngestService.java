@@ -4,37 +4,32 @@ import com.miniwsa.model.SecurityEvent;
 import com.miniwsa.queue.EventQueue;
 import org.springframework.stereotype.Service;
 
-import java.time.Clock;
-import java.time.Instant;
 import java.util.List;
 
 /**
- * Accepts already-validated events, stamps them with the server receive time and puts them on
- * the in-memory {@link EventQueue} for the storage worker.
+ * Puts already-validated events on the in-memory {@link EventQueue} for the storage worker. It sets no
+ * server-side fields: the consumer stamps {@code receivedAt} and enriches the events.
  */
 @Service
 public class IngestService {
 
     private final EventQueue queue;
-    private final Clock clock;
 
-    public IngestService(EventQueue queue, Clock clock) {
+    public IngestService(EventQueue queue) {
         this.queue = queue;
-        this.clock = clock;
     }
 
     /**
-     * Stamps every event in the batch with the same {@code receivedAt} and queues them all.
+     * Queues the whole batch as is.
      *
-     * @return the stamped events
+     * <p>The queued events belong to the consumer from here on (it changes them in place), so they are
+     * not handed back to the caller.
+     *
+     * @return how many events were queued
      * @throws EventPublishException if the queue has no room for the whole batch (nothing is queued)
      */
-    public List<SecurityEvent> ingest(List<SecurityEvent> events) {
-        Instant receivedAt = clock.instant();
-        List<SecurityEvent> stamped = events.stream()
-                .map(event -> event.withReceivedAt(receivedAt))
-                .toList();
-        queue.publish(stamped);
-        return stamped;
+    public int ingest(List<SecurityEvent> events) {
+        queue.publish(events);
+        return events.size();
     }
 }
