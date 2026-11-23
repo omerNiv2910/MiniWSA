@@ -24,12 +24,11 @@ import java.util.List;
  *
  * <p>{@code from} and {@code to} are required: when one is missing Spring rejects the request before
  * this method runs, and {@link ApiExceptionHandler} reports it as {@code errors: [{field, "is required"}]}.
- * Otherwise the parameters are taken as plain strings and checked here, and problems are reported
- * as a 400 with {@code errors: [{field, message}]}:
+ * Otherwise the parameters are taken as plain strings and checked here; every problem is collected
+ * and they are all reported together in one 400 with {@code errors: [{field, message}]}:
  * <ul>
  *   <li>{@code configId} may be absent (all configurations); when present it must be a positive
- *       integer, so an empty {@code configId=} is an error, not "all". A bad {@code configId} is
- *       reported on its own, before {@code from} and {@code to} are checked.</li>
+ *       integer, so an empty {@code configId=} is an error, not "all".</li>
  *   <li>{@code from} and {@code to} are required ISO-8601 timestamps with an offset ({@code Z} or e.g.
  *       {@code +02:00}, sent as {@code %2B02:00} since a bare {@code +} arrives as a space), and
  *       {@code from} must be before {@code to}.</li>
@@ -49,7 +48,7 @@ public class StatsController {
                                 @RequestParam(name = "from") String from,
                                 @RequestParam(name = "to") String to) {
         List<QueryParamError> errors = new ArrayList<>();
-        Long parsedConfigId = parseConfigId(configId);
+        Long parsedConfigId = parseConfigId(configId, errors);
         Instant parsedFrom = parseTimestamp("from", from, errors);
         Instant parsedTo = parseTimestamp("to", to, errors);
         if (parsedFrom != null && parsedTo != null && !parsedFrom.isBefore(parsedTo)) {
@@ -63,26 +62,20 @@ public class StatsController {
 
     // #################### Private Methods ####################
 
-    private static Long parseConfigId(String value) {
+    private static Long parseConfigId(String value, List<QueryParamError> errors) {
         if (value == null) {
             return null;
         }
-        long id;
         try {
-            id = Long.parseLong(value);
+            long id = Long.parseLong(value);
+            if (id > 0) {
+                return id;
+            }
         } catch (NumberFormatException e) {
-            // Not a whole number, empty ("configId="), or too large for a long.
-            throw invalidConfigId();
+            // Not a whole number, empty ("configId="), or too large for a long: reported below.
         }
-        if (id <= 0) {
-            throw invalidConfigId();
-        }
-        return id;
-    }
-
-    private static InvalidQueryParametersException invalidConfigId() {
-        return new InvalidQueryParametersException(
-                List.of(new QueryParamError("configId", "must be a positive integer")));
+        errors.add(new QueryParamError("configId", "must be a positive integer"));
+        return null;
     }
 
     private static Instant parseTimestamp(String name, String value, List<QueryParamError> errors) {

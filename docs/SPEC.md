@@ -64,14 +64,13 @@ batch is stamped again with the retry time. Ingest only validates and queues.
 **DECISION — parameters.** Errors are a `400` problem+json with
 `detail: "Invalid query parameters"` and `errors: [{field, message}]`.
 - `from`/`to` are required request parameters: a missing one is rejected by Spring before any other
-  check, so only that one is reported (`from` first) as `is required`. Once both are present, their
-  problems are reported together. An empty value (`from=`) → `is required`. They must be ISO-8601 with an offset (`Z` or
+  check, so only that one is reported (`from` first) as `is required`. Once both are present, every
+  problem with `configId`, `from` and `to` is collected and reported together, in that order. An empty value (`from=`) → `is required`. They must be ISO-8601 with an offset (`Z` or
   `+02:00`, sent as `%2B02:00` since a bare `+` in a query string is a space); fractional seconds are
   allowed; other formats (date only, no offset, epoch numbers) → the ingest timestamp message.
   Offsets are converted to UTC. `from >= to` → field `from`, `must be before to`.
 - `configId`: absent means all configurations. When present it must be a positive integer that fits
-  a `long`; anything else, including an empty `configId=`, → `must be a positive integer`. A bad
-  `configId` is reported on its own, before `from`/`to` are checked.
+  a `long`; anything else, including an empty `configId=`, → `must be a positive integer`.
 - Unknown parameters are ignored.
 
 **DECISION — response.**

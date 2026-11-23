@@ -190,17 +190,23 @@ class StatsControllerTest {
     }
 
     @Test
-    void badConfigIdIsReportedBeforeTheTimestamps() throws Exception {
+    void allProblemsAreReportedTogether() throws Exception {
         expectBadRequest(mvc.perform(get(URL).param("configId", "x").param("from", "bad").param("to", "")))
-                .andExpect(jsonPath("$.errors", hasSize(1)))
-                .andExpect(jsonPath("$.errors[0].field").value("configId"));
+                .andExpect(jsonPath("$.errors", hasSize(3)))
+                .andExpect(jsonPath("$.errors[0].field").value("configId"))
+                .andExpect(jsonPath("$.errors[0].message").value("must be a positive integer"))
+                .andExpect(jsonPath("$.errors[1].field").value("from"))
+                .andExpect(jsonPath("$.errors[1].message").value(ApiExceptionHandler.ISO_TIMESTAMP_MESSAGE))
+                .andExpect(jsonPath("$.errors[2].field").value("to"))
+                .andExpect(jsonPath("$.errors[2].message").value("is required"));
     }
 
     @Test
-    void fromAndToProblemsAreReportedTogether() throws Exception {
-        expectBadRequest(mvc.perform(get(URL).param("from", "bad").param("to", "")))
+    void badConfigIdAndReversedWindowAreReportedTogether() throws Exception {
+        expectBadRequest(mvc.perform(get(URL).param("configId", "0")
+                        .param("from", "2026-05-20T16:00:00Z").param("to", "2026-05-20T15:00:00Z")))
                 .andExpect(jsonPath("$.errors", hasSize(2)))
-                .andExpect(jsonPath("$.errors[*].field", containsInAnyOrder("from", "to")));
+                .andExpect(jsonPath("$.errors[*].field", containsInAnyOrder("configId", "from")));
     }
 
     @Test
