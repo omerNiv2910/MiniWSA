@@ -21,6 +21,8 @@ import java.util.List;
  * so an event already stored (including a repeat of an eventId earlier in the same batch) is
  * skipped. The whole batch is one transaction: a failed attempt rolls back entirely and the retry
  * starts clean.
+ *
+ * <p>{@code attackType} and {@code threatScore} are stored as given and may be null (not enriched).
  */
 @Component
 public class EventStore {
@@ -29,8 +31,8 @@ public class EventStore {
             INSERT INTO events (event_id, timestamp, config_id, policy_id, client_ip, hostname, path,
                                 method, status_code, user_agent, rule_id, rule_name, rule_message,
                                 severity, category, action, geo_country, geo_city,
-                                request_size, response_size, received_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                request_size, response_size, received_at, attack_type, threat_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (event_id) DO NOTHING
             """;
 
@@ -74,6 +76,12 @@ public class EventStore {
         setNullableLong(ps, 19, e.requestSize());
         setNullableLong(ps, 20, e.responseSize());
         ps.setObject(21, utc(e.receivedAt()));
+        ps.setString(22, e.attackType());
+        if (e.threatScore() == null) {
+            ps.setNull(23, Types.SMALLINT);
+        } else {
+            ps.setInt(23, e.threatScore());
+        }
     }
 
     private static void setNullableLong(PreparedStatement ps, int index, Long value) throws SQLException {

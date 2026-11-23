@@ -9,10 +9,10 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.http.MediaType;
+import org.springframework.test.json.JsonCompareMode;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
-import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,24 +64,30 @@ class IngestControllerTest {
     private IngestService ingestService;
 
     @BeforeEach
-    void echoIngestedEvents() {
-        when(ingestService.ingest(anyList())).thenAnswer(inv -> inv.getArgument(0));
+    void countIngestedEvents() {
+        when(ingestService.ingest(anyList())).thenAnswer(inv -> inv.<List<SecurityEvent>>getArgument(0).size());
     }
 
     @Test
-    void responseReturnsTheEventsAsQueuedWithReceivedAt() throws Exception {
-        when(ingestService.ingest(anyList())).thenAnswer(inv -> inv.<List<SecurityEvent>>getArgument(0).stream()
-                .map(e -> e.withReceivedAt(Instant.parse("2026-05-20T14:32:11Z")))
-                .toList());
-
+    void successReturns201WithStatusMessageAndCountOnly() throws Exception {
         mvc.perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content(EVENT))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.accepted").value(1))
-                .andExpect(jsonPath("$.events", hasSize(1)))
-                .andExpect(jsonPath("$.events[0].eventId").value("evt-00132"))
-                .andExpect(jsonPath("$.events[0].rule.category").value("INJECTION"))
-                .andExpect(jsonPath("$.events[0].geoLocation.country").value("CN"))
-                .andExpect(jsonPath("$.events[0].receivedAt").value("2026-05-20T14:32:11Z"));
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(content().json("""
+                        {"status": 201, "message": "Events accepted for processing", "accepted": 1}
+                        """, JsonCompareMode.STRICT));
+    }
+
+    @Test
+    void clientSuppliedEnrichmentIsAcceptedButIgnored() throws Exception {
+        String withScore = EVENT.replace("\"responseSize\": 256",
+                "\"responseSize\": 256, \"attackType\": \"x\", \"threatScore\": 99");
+
+        mvc.perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content(withScore))
+                .andExpect(status().isCreated());
+
+        assertThat(captureIngested().getFirst().threatScore()).isNull();
+        assertThat(captureIngested().getFirst().attackType()).isNull();
     }
 
     @Test
@@ -89,7 +95,7 @@ class IngestControllerTest {
         mvc.perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content(array(EVENT)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.accepted").value(1))
-                .andExpect(jsonPath("$.events[0].eventId").value("evt-00132"));
+                .andExpect(jsonPath("$.events").doesNotExist());
 
         List<SecurityEvent> ingested = captureIngested();
         assertThat(ingested).hasSize(1);

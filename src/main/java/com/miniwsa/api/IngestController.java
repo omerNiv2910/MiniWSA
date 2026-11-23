@@ -20,6 +20,10 @@ import java.util.List;
  * <p>Jackson parses the body and Spring validates every element before this method runs; both
  * kinds of failure are turned into a 400 with per-event errors by {@link ApiExceptionHandler}.
  * If any event is invalid the whole request is rejected and nothing is ingested.
+ *
+ * <p>On success the response is {@code 201 Created} with
+ * {@code {"status": 201, "message": "Events accepted for processing", "accepted": n}}; the events are not
+ * echoed back.
  */
 @RestController
 public class IngestController {

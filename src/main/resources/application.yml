@@ -16,6 +16,10 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      # Fail fast when Redis is down: the batch is then retried with backoff. The 60s default would
+      # block each attempt (and the shutdown drain) for a minute.
+      timeout: 1s
+      connect-timeout: 1s
 
 miniwsa:
   queue:

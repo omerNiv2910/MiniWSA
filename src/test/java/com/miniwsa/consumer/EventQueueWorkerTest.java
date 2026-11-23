@@ -93,6 +93,6 @@ class EventQueueWorkerTest {
         return new SecurityEvent(id, Instant.parse("2026-05-20T14:32:10Z"), 14227L, null,
                 "203.0.113.42", "www.example.com", "/", "GET", 403, null,
                 new SecurityEvent.Rule("1", "R", null, Severity.LOW, Category.BOT),
-                Action.DENY, null, null, null, null);
+                Action.DENY, null, null, null, null, null, null);
     }
 }
