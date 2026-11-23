@@ -2,8 +2,10 @@ package com.miniwsa;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 
-@SpringBootTest(properties = "spring.kafka.admin.auto-create=false")
+@SpringBootTest
+@Import(PostgresTestConfiguration.class)
 class MiniWsaApplicationTests {
 
     @Test

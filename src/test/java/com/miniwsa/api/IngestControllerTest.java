@@ -236,9 +236,9 @@ class IngestControllerTest {
     }
 
     @Test
-    void kafkaFailureIsServiceUnavailable() throws Exception {
+    void fullQueueIsServiceUnavailable() throws Exception {
         when(ingestService.ingest(anyList()))
-                .thenThrow(new EventPublishException("Kafka did not accept all events", new RuntimeException("boom")));
+                .thenThrow(new EventPublishException("Event queue is full"));
 
         mvc.perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content(array(EVENT)))
                 .andExpect(status().isServiceUnavailable())

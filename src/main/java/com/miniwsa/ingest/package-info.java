@@ -1,4 +1,4 @@
 /**
- * Ingestion path: validates incoming events and produces them to the raw events Kafka topic.
+ * Ingestion path: stamps validated events with the receive time and puts them on the in-memory event queue.
  */
 package com.miniwsa.ingest;
