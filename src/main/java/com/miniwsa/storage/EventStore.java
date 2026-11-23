@@ -26,7 +26,7 @@ import java.util.List;
 public class EventStore {
 
     static final String INSERT_EVENT = """
-            INSERT INTO events (event_id, event_time, config_id, policy_id, client_ip, hostname, path,
+            INSERT INTO events (event_id, timestamp, config_id, policy_id, client_ip, hostname, path,
                                 method, status_code, user_agent, rule_id, rule_name, rule_message,
                                 severity, category, action, geo_country, geo_city,
                                 request_size, response_size, received_at)

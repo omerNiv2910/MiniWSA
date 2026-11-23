@@ -3,7 +3,7 @@
 -- Nested JSON objects (rule, geoLocation) are flattened into columns.
 CREATE TABLE events (
     event_id      VARCHAR(128)  PRIMARY KEY,
-    event_time    TIMESTAMPTZ   NOT NULL,   -- the event's "timestamp"
+    timestamp     TIMESTAMPTZ   NOT NULL,
     config_id     BIGINT        NOT NULL,
     policy_id     VARCHAR(128),
     client_ip     VARCHAR(45)   NOT NULL,
@@ -26,8 +26,8 @@ CREATE TABLE events (
 );
 
 -- Samples: a tenant's newest events first, and newest events across all tenants.
-CREATE INDEX events_config_time_idx ON events (config_id, event_time DESC);
-CREATE INDEX events_time_idx ON events (event_time DESC);
+CREATE INDEX events_config_time_idx ON events (config_id, timestamp DESC);
+CREATE INDEX events_time_idx ON events (timestamp DESC);
 
 -- Event counts per tenant, minute of event time and (category, severity, action).
 -- At most 7 x 4 x 3 = 84 rows per tenant-minute, so the stats endpoints read these instead of

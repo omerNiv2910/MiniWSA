@@ -74,7 +74,7 @@ class EventStoreTest {
                 .containsEntry("geo_city", "Beijing")
                 .containsEntry("request_size", 1024L)
                 .containsEntry("response_size", 256L);
-        assertThat(instant("SELECT event_time FROM events")).isEqualTo(Instant.parse("2026-05-20T14:32:10Z"));
+        assertThat(instant("SELECT timestamp FROM events")).isEqualTo(Instant.parse("2026-05-20T14:32:10Z"));
         assertThat(instant("SELECT received_at FROM events")).isEqualTo(Instant.parse("2026-05-20T14:32:11Z"));
     }
 
