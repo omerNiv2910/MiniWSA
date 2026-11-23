@@ -72,7 +72,7 @@ curl "localhost:8080/v1/stats/summary?configId=14227&from=2026-05-20T14:00:00Z&t
 - `configId` is optional. Without it every configuration is counted and `configId` is left out of the response.
 - `byCategory` and `byAction` list only categories and actions that have events, highest count first (ties by name). `avgThreatScore` averages the scored events to one decimal, and is `null` if none of them has a score.
 - `topAttackers` and `topTargetedPaths` hold at most 10 entries, most events first; ties are ordered by the IP or path as plain text.
-- Bad parameters return `400` problem+json. A missing `from` or `to`, or a bad `configId`, is reported on its own; otherwise the `from` and `to` problems are listed together:
+- Bad parameters return `400` problem+json. A missing `from` or `to` is reported on its own; once both are present, every problem (with `configId`, `from` and `to`) is listed together:
 
 ```json
 { "status": 400, "detail": "Invalid query parameters",
