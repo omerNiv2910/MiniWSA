@@ -36,6 +36,6 @@ public class IngestController {
         if (events.isEmpty()) {
             throw new InvalidEventsException("Request must contain at least one event", List.of());
         }
-        return new IngestResponse(ingestService.ingest(events).size());
+        return IngestResponse.of(ingestService.ingest(events));
     }
 }

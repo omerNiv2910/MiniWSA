@@ -12,6 +12,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,10 +69,27 @@ class IngestControllerTest {
     }
 
     @Test
+    void responseReturnsTheEventsAsQueuedWithReceivedAt() throws Exception {
+        when(ingestService.ingest(anyList())).thenAnswer(inv -> inv.<List<SecurityEvent>>getArgument(0).stream()
+                .map(e -> e.withReceivedAt(Instant.parse("2026-05-20T14:32:11Z")))
+                .toList());
+
+        mvc.perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content(EVENT))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.accepted").value(1))
+                .andExpect(jsonPath("$.events", hasSize(1)))
+                .andExpect(jsonPath("$.events[0].eventId").value("evt-00132"))
+                .andExpect(jsonPath("$.events[0].rule.category").value("INJECTION"))
+                .andExpect(jsonPath("$.events[0].geoLocation.country").value("CN"))
+                .andExpect(jsonPath("$.events[0].receivedAt").value("2026-05-20T14:32:11Z"));
+    }
+
+    @Test
     void singleEventArrayIsAccepted() throws Exception {
         mvc.perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content(array(EVENT)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.accepted").value(1));
+                .andExpect(jsonPath("$.accepted").value(1))
+                .andExpect(jsonPath("$.events[0].eventId").value("evt-00132"));
 
         List<SecurityEvent> ingested = captureIngested();
         assertThat(ingested).hasSize(1);
