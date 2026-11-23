@@ -35,7 +35,15 @@ action DENY +20 / ALERT +10 / MONITOR +0; path contains `/admin` or `/login` +15
 more than 5 events from the same `clientIp` in the last 10 minutes +15.
 
 **DECISION:** the 10-minute window is measured on event `timestamp` and counts the events
-before the current one (so the 6th+ event in the window gets the bonus).
+before the current one (so the 6th+ event in the window gets the bonus). The window is
+`[timestamp - 10 min, timestamp]`, both ends included; events with a later timestamp do not count.
+
+**DECISION:** recent events per `clientIp` live in Redis, one sorted set per IP (member `eventId`,
+score = timestamp), updated and counted in one pipelined call per batch. Redis over an in-memory map
+because the history survives restarts and is shared if more than one instance runs. Old entries are
+trimmed on every batch, a quiet IP's key expires after 15 minutes, and each IP keeps at most its
+newest 1000 entries. If Redis is down the batch is not stored and is retried, so no event is ever
+stored with a score missing its bonus.
 
 Store original fields + `attackType`, `threatScore`, `receivedAt`.
 

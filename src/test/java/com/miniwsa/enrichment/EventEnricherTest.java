@@ -43,7 +43,7 @@ class EventEnricherTest {
         }
 
         @Test
-        void addsTheRepeatOffenderBonusFromThePriorCount() {
+        void addsTheFrequentClientIpBonusFromThePriorCount() {
             EventEnricher.enrich(event, now, 5);
 
             assertThat(event.threatScore()).isEqualTo(90);
@@ -134,7 +134,7 @@ class EventEnricherTest {
 
         @ParameterizedTest
         @CsvSource({"0, 10", "4, 10", "5, 25", "6, 25", "500, 25"})
-        void repeatOffenderBonusStartsAtFivePriorEvents(long prior, int expected) {
+        void frequentClientIpBonusStartsAtFivePriorEvents(long prior, int expected) {
             assertThat(EventEnricher.threatScore(Severity.LOW, Action.MONITOR, PLAIN_PATH, prior))
                     .isEqualTo(expected);
         }

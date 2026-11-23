@@ -11,7 +11,7 @@ import java.time.Instant;
  * Computes the server-side fields stored with each event: the human-readable {@code attackType}, the
  * {@code threatScore} (0-100), and the {@code receivedAt} stamp.
  *
- * <p>Pure functions only: no I/O and no clock. The repeat-offender count comes from the per-IP tracker and
+ * <p>Pure functions only: no I/O and no clock. The frequent-client-IP count comes from the per-IP tracker and
  * is passed in, so all scoring rules can be unit-tested here.
  *
  * <p>The switches are exhaustive and have no {@code default} branch, so adding an enum constant without a
@@ -21,10 +21,10 @@ import java.time.Instant;
 public final class EventEnricher {
 
     /** Prior events from the same clientIp in the window needed for the bonus ("more than 5" including this one). */
-    private static final long REPEAT_OFFENDER_PRIOR_EVENTS = 5;
+    private static final long FREQUENT_CLIENT_IP_PRIOR_EVENTS = 5;
 
     private static final int SENSITIVE_PATH_BONUS = 15;
-    private static final int REPEAT_OFFENDER_BONUS = 15;
+    private static final int FREQUENT_CLIENT_IP_BONUS = 15;
     private static final int MAX_SCORE = 100;
 
     private EventEnricher() {
@@ -63,7 +63,7 @@ public final class EventEnricher {
     }
 
     /**
-     * Returns the threat score: severity weight + action weight + sensitive-path bonus + repeat-offender
+     * Returns the threat score: severity weight + action weight + sensitive-path bonus + frequent-client-IP
      * bonus, capped at 100 as the brief says. The real range is 10-90, so the cap is only a guard.
      *
      * @param priorEventsInWindow events from the same clientIp in the 10 minutes before this one,
@@ -75,8 +75,8 @@ public final class EventEnricher {
         if (isSensitivePath(path)) {
             score += SENSITIVE_PATH_BONUS;
         }
-        if (isRepeatOffender(priorEventsInWindow)) {
-            score += REPEAT_OFFENDER_BONUS;
+        if (isFrequentClientIp(priorEventsInWindow)) {
+            score += FREQUENT_CLIENT_IP_BONUS;
         }
         return Math.min(score, MAX_SCORE);
     }
@@ -104,7 +104,7 @@ public final class EventEnricher {
     }
 
     /** "More than 5 events in the last 10 minutes" counting the current one, i.e. at least 5 prior events. */
-    private static boolean isRepeatOffender(long priorEventsInWindow) {
-        return priorEventsInWindow >= REPEAT_OFFENDER_PRIOR_EVENTS;
+    private static boolean isFrequentClientIp(long priorEventsInWindow) {
+        return priorEventsInWindow >= FREQUENT_CLIENT_IP_PRIOR_EVENTS;
     }
 }

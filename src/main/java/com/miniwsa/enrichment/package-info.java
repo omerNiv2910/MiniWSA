@@ -1,4 +1,4 @@
 /**
- * Classification and threat scoring, including the per-IP repeat-offender window.
+ * Classification and threat scoring, including the per-client-IP 10-minute window.
  */
 package com.miniwsa.enrichment;

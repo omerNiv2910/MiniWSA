@@ -1,5 +1,6 @@
 package com.miniwsa.consumer;
 
+import com.miniwsa.enrichment.ClientIpTracker;
 import com.miniwsa.enrichment.EventEnricher;
 import com.miniwsa.model.SecurityEvent;
 import com.miniwsa.storage.EventStore;
@@ -18,28 +19,38 @@ import java.util.List;
  *   <li>{@code receivedAt}: the time the consumer handles the batch, the same for every event in it. A
  *       retried batch is stamped again with the retry time.</li>
  *   <li>{@code attackType} and {@code threatScore}: recomputed on every attempt, which gives the same
- *       result.</li>
+ *       result. The frequent-client-IP count comes from the {@link ClientIpTracker}.</li>
  * </ul>
  * {@link EventEnricher#enrich} sets all three.
  *
- * <p>The repeat-offender count is always 0 until the per-IP Redis tracker is wired in, so no event gets
- * the repeat-offender bonus yet.
+ * <p>If the tracker fails (Redis down), nothing is stored and the exception reaches the worker, which
+ * retries the batch. Storing without the bonus would leave wrong scores forever, since a stored row is
+ * never rewritten.
  */
 @Component
 class StoringEventBatchHandler implements EventBatchHandler {
 
+    private final ClientIpTracker tracker;
     private final EventStore store;
     private final Clock clock;
 
-    StoringEventBatchHandler(EventStore store, Clock clock) {
+    StoringEventBatchHandler(ClientIpTracker tracker, EventStore store, Clock clock) {
+        this.tracker = tracker;
         this.store = store;
         this.clock = clock;
     }
 
     @Override
     public void handle(List<SecurityEvent> events) {
+        List<Long> priorCounts = tracker.priorCounts(events);
+        if (priorCounts.size() != events.size()) {
+            throw new IllegalStateException(
+                    "Tracker returned " + priorCounts.size() + " counts for " + events.size() + " events");
+        }
         Instant receivedAt = clock.instant();
-        events.forEach(event -> EventEnricher.enrich(event, receivedAt, 0));
+        for (int i = 0; i < events.size(); i++) {
+            EventEnricher.enrich(events.get(i), receivedAt, priorCounts.get(i));
+        }
         store.saveBatch(events);
     }
 }
