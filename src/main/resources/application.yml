@@ -8,41 +8,27 @@ spring:
     deserialization:
       # Lets POST /v1/events/ingest take a bare event object as a one-event batch.
       accept-single-value-as-array: true
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    producer:
-      acks: all
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
-      properties:
-        enable.idempotence: true
-        # Plain JSON on the wire, no Java class name in the record headers.
-        spring.json.add.type.headers: false
-        # Fail fast instead of holding an ingest request for the 60s/120s defaults.
-        max.block.ms: 5000
-        request.timeout.ms: 5000
-        delivery.timeout.ms: 10000
-    consumer:
-      group-id: miniwsa-workers
-      auto-offset-reset: earliest
-      enable-auto-commit: false
-    listener:
-      ack-mode: manual
-      type: batch
-  mongodb:
-    uri: ${MONGODB_URI:mongodb://localhost:27017/miniwsa}
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/miniwsa}
+    username: ${DATABASE_USER:miniwsa}
+    password: ${DATABASE_PASSWORD:miniwsa}
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
 
 miniwsa:
-  topics:
-    raw: dlr.events.raw
-    dlq: dlr.events.dlq
-  ingest:
-    # Above delivery.timeout.ms, so the producer reports its own error first.
-    send-timeout: 12s
+  queue:
+    # Events held in memory between ingest and storage. They are lost if the process dies;
+    # ingest answers 503 when a request doesn't fit.
+    capacity: 100000
+    batch-size: 500
+    poll-timeout: 500ms
+    # A failed batch (PostgreSQL down) is retried with doubling waits, up to the max, until it succeeds.
+    retry-initial-interval: 1s
+    retry-max-interval: 30s
+    # On shutdown, how long the worker gets to store what is still queued.
+    shutdown-timeout: 10s
 
 management:
   endpoints:

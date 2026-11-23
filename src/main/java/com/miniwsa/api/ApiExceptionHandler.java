@@ -114,8 +114,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Kafka did not take the whole batch. Some events may already be written, so the client should
-     * retry the whole request; storage is idempotent on {@code eventId}. Returned as 503 because it
+     * The event queue had no room for the whole batch, usually because storage is slow or down.
+     * Nothing was queued, so the client should retry the whole request. Returned as 503 because it
      * is a temporary problem on our side, not something wrong with the request.
      */
     @ExceptionHandler(EventPublishException.class)
