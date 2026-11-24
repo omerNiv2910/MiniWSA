@@ -225,7 +225,7 @@ The read APIs (`/v1/stats/summary`, `/v1/stats/timeseries` and `/v1/events/sampl
 | Package | Responsibility |
 |---|---|
 | `model` | Security event model and its enums, shared by every stage |
-| `api` | REST controllers and response DTOs, the rate-limit interceptor and error handling |
+| `api` | REST controllers, response DTOs and error handling |
 | `ingest` | Stamping events and queueing them |
 | `queue` | Bounded in-memory event queue |
 | `consumer` | Worker that takes batches off the queue and stores them |
@@ -233,7 +233,7 @@ The read APIs (`/v1/stats/summary`, `/v1/stats/timeseries` and `/v1/events/sampl
 | `storage` | PostgreSQL event writes, stats, timeseries and samples queries, and the shared read-query timeout |
 | `stats` | Stats summary and timeseries response types, and the timeseries intervals |
 | `samples` | Samples query and response types |
-| `ratelimit` | Redis per-IP request counter and fixed-window maths |
+| `ratelimit` | Rate limiting: the interceptor in front of the read endpoints, the Redis per-IP counter, the fixed-window maths and the 429 exception |
 | `generator` | Synthetic data generator |
 | `config` | Application properties, shared beans and the rate-limit path registration |
 

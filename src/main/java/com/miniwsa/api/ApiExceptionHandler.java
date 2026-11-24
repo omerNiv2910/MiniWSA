@@ -1,6 +1,7 @@
 package com.miniwsa.api;
 
 import com.miniwsa.ingest.EventPublishException;
+import com.miniwsa.ratelimit.RateLimitExceededException;
 import com.miniwsa.storage.ReadQueryTimeoutException;
 import org.springframework.beans.TypeMismatchException;
 import org.springframework.context.MessageSourceResolvable;
@@ -196,8 +197,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * The client used up its read budget for the current window ({@link RateLimitInterceptor}). Not a
-     * problem on our side, so only DEBUG: a client hammering the API would otherwise flood the log.
+     * The client used up its read budget for the current window
+     * ({@link com.miniwsa.ratelimit.RateLimitInterceptor}). Not a problem on our side, so only DEBUG: a client
+     * hammering the API would otherwise flood the log.
      */
     @ExceptionHandler(RateLimitExceededException.class)
     ResponseEntity<ProblemDetail> handleRateLimitExceeded(RateLimitExceededException ex) {
