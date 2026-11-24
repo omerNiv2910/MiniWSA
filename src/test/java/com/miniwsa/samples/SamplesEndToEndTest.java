@@ -7,6 +7,7 @@ import com.miniwsa.model.Category;
 import com.miniwsa.model.SecurityEvent;
 import com.miniwsa.model.Severity;
 import com.miniwsa.storage.EventStore;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -15,10 +16,13 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.json.JsonCompareMode;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.awaitility.Awaitility.await;
 import static org.hamcrest.Matchers.contains;
@@ -34,6 +38,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * {@code GET /v1/events/samples} with the real wiring: Spring context, exception handler, EventStore and
  * PostgreSQL. The database is shared with the other {@code @SpringBootTest}s, so every test uses its own
  * configId and only queries that.
+ *
+ * <p>Redis, and so the rate limiter, is shared too, and MockMvc requests all come from 127.0.0.1 by
+ * default; with the Awaitility polling the suite could spend the 100-per-window read budget and get a 429.
+ * So every request goes through {@link #perform} with a client IP of its own per test.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -50,19 +58,37 @@ class SamplesEndToEndTest {
     @Autowired
     private EventStore eventStore;
 
+    /** Hands each test its own client IP (192.0.2.1-99 here; other e2e classes use other ranges). */
+    private static final AtomicInteger NEXT_CLIENT = new AtomicInteger(1);
+
+    private String clientIp;
+
+    @BeforeEach
+    void useOwnClientIp() {
+        clientIp = "192.0.2." + NEXT_CLIENT.getAndIncrement();
+    }
+
+    /** Performs the request from this test's client IP, so it has its own rate-limit budget. */
+    private ResultActions perform(MockHttpServletRequestBuilder request) throws Exception {
+        return mvc.perform(request.with(req -> {
+            req.setRemoteAddr(clientIp);
+            return req;
+        }));
+    }
+
     @Test
     void ingestedEventsComeBackEnrichedNewestFirst() throws Exception {
         String config = "990001";
-        mvc.perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content("""
+        perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content("""
                         [%s, %s]
                         """.formatted(ingestBody("e2e-old", config, T0), ingestBody("e2e-new", config, T0.plusSeconds(60)))))
                 .andExpect(status().isCreated());
 
         // Ingest is asynchronous: wait until the worker has stored both events.
-        await().atMost(WAIT).untilAsserted(() -> mvc.perform(get(URL).param("configId", config))
+        await().atMost(WAIT).untilAsserted(() -> perform(get(URL).param("configId", config))
                 .andExpect(jsonPath("$.total").value(2)));
 
-        mvc.perform(get(URL).param("configId", config))
+        perform(get(URL).param("configId", config))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.events[*].eventId").value(contains("e2e-new", "e2e-old")))
@@ -91,7 +117,7 @@ class SamplesEndToEndTest {
         String from = "2026-05-21T10:00:10Z";
         String to = "2026-05-21T11:00:00Z";
 
-        mvc.perform(get(URL).param("configId", Long.toString(config)).param("from", from).param("to", to)
+        perform(get(URL).param("configId", Long.toString(config)).param("from", from).param("to", to)
                         .param("category", "XSS").param("action", "DENY").param("limit", "2"))
                 .andExpect(status().isOk())
                 .andExpect(content().json("""
@@ -99,12 +125,12 @@ class SamplesEndToEndTest {
                         """, JsonCompareMode.LENIENT))
                 .andExpect(jsonPath("$.events[*].eventId").value(contains("f-4", "f-5")));
 
-        mvc.perform(get(URL).param("configId", Long.toString(config)).param("from", from).param("to", to)
+        perform(get(URL).param("configId", Long.toString(config)).param("from", from).param("to", to)
                         .param("category", "XSS").param("action", "DENY").param("limit", "2").param("offset", "2"))
                 .andExpect(jsonPath("$.total").value(5))
                 .andExpect(jsonPath("$.events[*].eventId").value(contains("f-3", "f-2")));
 
-        mvc.perform(get(URL).param("configId", Long.toString(config)).param("from", from).param("to", to)
+        perform(get(URL).param("configId", Long.toString(config)).param("from", from).param("to", to)
                         .param("category", "XSS").param("action", "DENY").param("limit", "2").param("offset", "4"))
                 .andExpect(jsonPath("$.total").value(5))
                 .andExpect(jsonPath("$.events[*].eventId").value(contains("f-1")));
@@ -112,7 +138,7 @@ class SamplesEndToEndTest {
 
     @Test
     void unknownConfigIsAnEmptyPage() throws Exception {
-        mvc.perform(get(URL).param("configId", "990777"))
+        perform(get(URL).param("configId", "990777"))
                 .andExpect(status().isOk())
                 .andExpect(content().json("""
                         {"total": 0, "events": []}
@@ -121,14 +147,14 @@ class SamplesEndToEndTest {
 
     @Test
     void invalidParametersAreReportedByTheRealHandler() throws Exception {
-        mvc.perform(get(URL).param("configId", "0").param("limit", "101"))
+        perform(get(URL).param("configId", "0").param("limit", "101"))
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.detail").value("Invalid query parameters"))
                 .andExpect(jsonPath("$.errors", hasSize(2)))
                 .andExpect(jsonPath("$.errors[*].field", containsInAnyOrder("configId", "limit")));
 
-        mvc.perform(get(URL).param("category", "xss"))
+        perform(get(URL).param("category", "xss"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errors[0].field").value("category"));
     }

@@ -195,6 +195,19 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 .body(body);
     }
 
+    /**
+     * The client used up its read budget for the current window ({@link RateLimitInterceptor}). Not a
+     * problem on our side, so only DEBUG: a client hammering the API would otherwise flood the log.
+     */
+    @ExceptionHandler(RateLimitExceededException.class)
+    ResponseEntity<ProblemDetail> handleRateLimitExceeded(RateLimitExceededException ex) {
+        logger.debug("Rate limit exceeded");
+        ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS,
+                "Rate limit exceeded; try again later");
+        body.setTitle("Too Many Requests");
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(body);
+    }
+
     private ResponseEntity<Object> badRequest(Exception ex, String detail, List<EventError> errors,
                                               HttpHeaders headers, WebRequest request) {
         ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, detail);

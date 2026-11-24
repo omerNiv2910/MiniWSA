@@ -9,7 +9,8 @@ import java.time.Duration;
  * Application settings bound from the {@code miniwsa.*} namespace.
  */
 @ConfigurationProperties(prefix = "miniwsa")
-public record MiniWsaProperties(Queue queue, @DefaultValue Samples samples, @DefaultValue Timeseries timeseries) {
+public record MiniWsaProperties(Queue queue, @DefaultValue Samples samples, @DefaultValue Timeseries timeseries,
+                                @DefaultValue RateLimit rateLimit) {
 
     /**
      * @param capacity             most events held in memory; ingest answers 503 when a request doesn't fit
@@ -37,5 +38,28 @@ public record MiniWsaProperties(Queue queue, @DefaultValue Samples samples, @Def
      *                     {@code miniwsa.timeseries} block is left out.
      */
     public record Timeseries(@DefaultValue("5s") Duration queryTimeout) {
+    }
+
+    /**
+     * Per-client-IP request budget for the read endpoints ({@code GET /v1/stats/**} and
+     * {@code /v1/events/samples}), which share one fixed window. Each key defaults on its own, also
+     * when the whole {@code miniwsa.rate-limit} block is left out. Bad values fail startup rather
+     * than silently disabling or breaking the limiter.
+     *
+     * @param enabled whether requests are counted and limited at all; defaults to true
+     * @param limit   most requests one client IP may make per window; at least 1, defaults to 100
+     * @param window  length of the fixed window; at least 1s, defaults to 1m
+     */
+    public record RateLimit(@DefaultValue("true") boolean enabled, @DefaultValue("100") int limit,
+                            @DefaultValue("1m") Duration window) {
+
+        public RateLimit {
+            if (limit < 1) {
+                throw new IllegalArgumentException("miniwsa.rate-limit.limit must be at least 1");
+            }
+            if (window == null || window.compareTo(Duration.ofSeconds(1)) < 0) {
+                throw new IllegalArgumentException("miniwsa.rate-limit.window must be at least 1s");
+            }
+        }
     }
 }

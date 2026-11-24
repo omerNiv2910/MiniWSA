@@ -8,6 +8,7 @@ import com.miniwsa.model.Category;
 import com.miniwsa.model.SecurityEvent;
 import com.miniwsa.model.Severity;
 import com.miniwsa.storage.EventStore;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -16,11 +17,13 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.json.JsonCompareMode;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -37,6 +40,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * {@code GET /v1/stats/timeseries} with the real wiring: ingest endpoint and queue worker, Spring context,
  * exception handler, EventStore and PostgreSQL. The database is shared with the other
  * {@code @SpringBootTest}s, so every test uses its own configId and time window.
+ *
+ * <p>Redis, and so the rate limiter, is shared too, and MockMvc requests all come from 127.0.0.1 by
+ * default; with the Awaitility polling the suite could spend the 100-per-window read budget and get a 429.
+ * So every request goes through {@link #perform} with a client IP of its own per test.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -54,12 +61,30 @@ class TimeseriesEndToEndTest {
     @Autowired
     private EventStore eventStore;
 
+    /** Hands each test its own client IP (192.0.2.101-199 here; other e2e classes use other ranges). */
+    private static final AtomicInteger NEXT_CLIENT = new AtomicInteger(101);
+
+    private String clientIp;
+
+    @BeforeEach
+    void useOwnClientIp() {
+        clientIp = "192.0.2." + NEXT_CLIENT.getAndIncrement();
+    }
+
+    /** Performs the request from this test's client IP, so it has its own rate-limit budget. */
+    private ResultActions perform(MockHttpServletRequestBuilder request) throws Exception {
+        return mvc.perform(request.with(req -> {
+            req.setRemoteAddr(clientIp);
+            return req;
+        }));
+    }
+
     @Test
     void ingestedEventsAreCountedPerBucket() throws Exception {
         String config = "990201";
         // 10:00:10 and 10:03:00 share the first 5m bucket, 10:12:59 is in the third, and 10:15:00 is
         // exactly at "to" so it is not counted.
-        mvc.perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content("[%s, %s, %s, %s]".formatted(
+        perform(post("/v1/events/ingest").contentType(MediaType.APPLICATION_JSON).content("[%s, %s, %s, %s]".formatted(
                         ingestBody("ts-1", config, T0.plusSeconds(10)),
                         ingestBody("ts-2", config, T0.plusSeconds(180)),
                         ingestBody("ts-3", config, T0.plusSeconds(779)),
@@ -67,11 +92,11 @@ class TimeseriesEndToEndTest {
                 .andExpect(status().isCreated());
 
         // Ingest is asynchronous: wait until the worker has stored all four events.
-        await().atMost(WAIT).untilAsserted(() -> mvc.perform(get(SUMMARY_URL).param("configId", config)
+        await().atMost(WAIT).untilAsserted(() -> perform(get(SUMMARY_URL).param("configId", config)
                         .param("from", "2026-05-22T10:00:00Z").param("to", "2026-05-22T11:00:00Z"))
                 .andExpect(jsonPath("$.totalEvents").value(4)));
 
-        mvc.perform(timeseries(config, "2026-05-22T10:00:00Z", "2026-05-22T10:15:00Z", "5m"))
+        perform(timeseries(config, "2026-05-22T10:00:00Z", "2026-05-22T10:15:00Z", "5m"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(content().json("""
@@ -120,7 +145,7 @@ class TimeseriesEndToEndTest {
 
     @Test
     void unknownConfigIsAllZeroBuckets() throws Exception {
-        mvc.perform(timeseries("990777", "2026-05-22T10:00:00Z", "2026-05-22T13:00:00Z", "1h"))
+        perform(timeseries("990777", "2026-05-22T10:00:00Z", "2026-05-22T13:00:00Z", "1h"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalEvents").value(0))
                 .andExpect(jsonPath("$.buckets", hasSize(3)))
@@ -129,7 +154,7 @@ class TimeseriesEndToEndTest {
 
     @Test
     void invalidParametersAreReportedByTheRealHandler() throws Exception {
-        mvc.perform(timeseries("0", "2026-05-22T10:00:00Z", "2026-05-22T09:00:00Z", "2m"))
+        perform(timeseries("0", "2026-05-22T10:00:00Z", "2026-05-22T09:00:00Z", "2m"))
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.detail").value("Invalid query parameters"))
@@ -139,7 +164,7 @@ class TimeseriesEndToEndTest {
                 .andExpect(jsonPath("$.errors[2].field").value("from"))
                 .andExpect(jsonPath("$.errors[2].message").value("must be before to"));
 
-        mvc.perform(get(URL).param("from", "2026-05-22T10:00:00Z").param("to", "2026-05-22T11:00:00Z"))
+        perform(get(URL).param("from", "2026-05-22T10:00:00Z").param("to", "2026-05-22T11:00:00Z"))
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.errors[0].field").value("interval"))
@@ -159,7 +184,7 @@ class TimeseriesEndToEndTest {
     }
 
     private long totalEvents(MockHttpServletRequestBuilder request) throws Exception {
-        String body = mvc.perform(request).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String body = perform(request).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         return ((Number) JsonPath.read(body, "$.totalEvents")).longValue();
     }
 
