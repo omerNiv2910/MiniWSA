@@ -16,18 +16,15 @@ import java.util.Set;
  */
 final class ReferenceData {
 
-    /** A customer (WAF configuration) and the site it protects. Hostnames use the reserved example.* domains. */
-    record Tenant(Long configId, String policyId, String hostname) {
-    }
-
     /** A client on the internet; it keeps the same location in every event it sends. */
     record Client(String clientIp, GeoLocation geoLocation) {
     }
 
-    static final List<Tenant> TENANTS = List.of(
-            new Tenant(14227L, "pol_web1", "www.example.com"),
-            new Tenant(21503L, "pol_shop", "shop.example.org"),
-            new Tenant(30871L, "pol_api", "api.example.net"));
+    // The customers: the same index in these three lists is one customer, so a configId always comes with its
+    // own policyId and hostname. Hostnames use the reserved example.* domains.
+    static final List<Long> CONFIG_IDS = List.of(14227L, 21503L, 30871L);
+    static final List<String> POLICY_IDS = List.of("pol_web1", "pol_shop", "pol_api");
+    static final List<String> HOSTNAMES = List.of("www.example.com", "shop.example.org", "api.example.net");
 
     /** Ordinary pages and API calls. */
     static final List<String> NORMAL_PATHS = List.of(
