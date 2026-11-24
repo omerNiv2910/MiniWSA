@@ -1,7 +1,10 @@
 package com.miniwsa.api;
 
 import com.miniwsa.ingest.EventPublishException;
+import com.miniwsa.samples.SamplesQueryTimeoutException;
+import org.springframework.beans.TypeMismatchException;
 import org.springframework.context.MessageSourceResolvable;
+import org.springframework.core.MethodParameter;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -15,9 +18,11 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.validation.method.ParameterErrors;
 import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.exc.StreamReadException;
@@ -25,15 +30,18 @@ import tools.jackson.databind.exc.InvalidFormatException;
 import tools.jackson.databind.exc.MismatchedInputException;
 
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
- * Renders request errors as problem details with an {@code errors} list of
- * {@link EventError}s, so clients can see which event and which field is wrong.
+ * Renders request errors as problem details with an {@code errors} list: {@link EventError}s for the
+ * ingest body, so clients can see which event and which field is wrong, and {@link QueryParamError}s
+ * for query parameters.
  *
  * <p>Extending {@link ResponseEntityExceptionHandler} replaces Spring Boot's default problem-details
  * handler, so every other standard MVC exception still gets a problem-details response.
@@ -47,10 +55,25 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     /** Shown for a bad timestamp, in an event body or in a query parameter. */
     static final String ISO_TIMESTAMP_MESSAGE = "must be an ISO-8601 timestamp, e.g. 2026-05-20T14:32:10Z";
 
-    /** Bean validation failures on list elements, e.g. a missing {@code clientIp} in event 3. */
+    /**
+     * Bean validation failures. On query parameters (e.g. {@code limit=101} on samples) they are reported
+     * as {@link QueryParamError}s, all together. Otherwise they are on list elements of the ingest body,
+     * e.g. a missing {@code clientIp} in event 3.
+     */
     @Override
     protected ResponseEntity<Object> handleHandlerMethodValidationException(
             HandlerMethodValidationException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        if (ex.getParameterValidationResults().stream().allMatch(ApiExceptionHandler::isQueryParameter)) {
+            List<QueryParamError> errors = new ArrayList<>();
+            for (ParameterValidationResult result : ex.getParameterValidationResults()) {
+                String name = queryParameterName(result.getMethodParameter());
+                for (MessageSourceResolvable error : result.getResolvableErrors()) {
+                    errors.add(new QueryParamError(name, error.getDefaultMessage()));
+                }
+            }
+            return badQuery(ex, errors, headers, request);
+        }
+
         List<EventError> errors = new ArrayList<>();
         for (ParameterValidationResult result : ex.getParameterValidationResults()) {
             int index = result.getContainerIndex() != null ? result.getContainerIndex() : 0;
@@ -126,9 +149,35 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     protected ResponseEntity<Object> handleMissingServletRequestParameter(
             MissingServletRequestParameterException ex, HttpHeaders headers, HttpStatusCode status,
             WebRequest request) {
-        ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Invalid query parameters");
-        body.setProperty("errors", List.of(new QueryParamError(ex.getParameterName(), "is required")));
-        return handleExceptionInternal(ex, body, headers, HttpStatus.BAD_REQUEST, request);
+        return badQuery(ex, List.of(new QueryParamError(ex.getParameterName(), "is required")), headers, request);
+    }
+
+    /**
+     * A query parameter that could not be converted to its type, e.g. {@code limit=abc},
+     * {@code category=xss} or {@code from=yesterday} on samples. Spring stops at the first one, so a
+     * single {@link QueryParamError} is reported.
+     */
+    @Override
+    protected ResponseEntity<Object> handleTypeMismatch(
+            TypeMismatchException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        if (!(ex instanceof MethodArgumentTypeMismatchException mismatch)) {
+            return super.handleTypeMismatch(ex, headers, status, request);
+        }
+        String name = queryParameterName(mismatch.getParameter());
+        return badQuery(ex, List.of(new QueryParamError(name, typeMessage(mismatch.getRequiredType()))),
+                headers, request);
+    }
+
+    /**
+     * A samples query ran past {@code miniwsa.samples.query-timeout} and PostgreSQL cancelled it. The
+     * same request would time out again, so there is no Retry-After: the client should narrow it.
+     */
+    @ExceptionHandler(SamplesQueryTimeoutException.class)
+    ResponseEntity<ProblemDetail> handleSamplesQueryTimeout(SamplesQueryTimeoutException ex) {
+        logger.warn("Samples query timed out: " + ex.getMessage());
+        ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                "Query took too long; narrow the filters or the time range");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(body);
     }
 
     /**
@@ -151,6 +200,43 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, detail);
         body.setProperty("errors", errors);
         return handleExceptionInternal(ex, body, headers, HttpStatus.BAD_REQUEST, request);
+    }
+
+    private ResponseEntity<Object> badQuery(Exception ex, List<QueryParamError> errors,
+                                            HttpHeaders headers, WebRequest request) {
+        ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Invalid query parameters");
+        body.setProperty("errors", errors);
+        return handleExceptionInternal(ex, body, headers, HttpStatus.BAD_REQUEST, request);
+    }
+
+    private static boolean isQueryParameter(ParameterValidationResult result) {
+        return result.getMethodParameter().hasParameterAnnotation(RequestParam.class);
+    }
+
+    /** The name the client used: the one given in {@code @RequestParam}, else the Java parameter name. */
+    private static String queryParameterName(MethodParameter parameter) {
+        RequestParam annotation = parameter.getParameterAnnotation(RequestParam.class);
+        if (annotation != null && !annotation.name().isEmpty()) {
+            return annotation.name();
+        }
+        return Objects.requireNonNullElse(parameter.getParameterName(), "");
+    }
+
+    /** What a query parameter of this type must look like. */
+    private static String typeMessage(Class<?> type) {
+        if (type != null && type.isEnum()) {
+            String allowed = Arrays.stream(type.getEnumConstants())
+                    .map(Object::toString)
+                    .collect(Collectors.joining(", "));
+            return "must be one of [" + allowed + "]";
+        }
+        if (type == Instant.class || type == OffsetDateTime.class) {
+            return ISO_TIMESTAMP_MESSAGE;
+        }
+        if (type == Long.class || type == long.class) {
+            return "must be a positive integer";
+        }
+        return "must be an integer";
     }
 
     /** Builds a dotted path such as {@code rule.category} from where Jackson hit the problem. */

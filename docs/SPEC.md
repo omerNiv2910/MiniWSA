@@ -100,6 +100,52 @@ the ingest queue, so events still waiting in the queue are not counted yet.
 Filters (all optional): `configId, from, to, category, action`. `limit` default 20, max 100;
 `offset`. Sorted by `timestamp` desc. Response includes `total`.
 
+*(Done.)*
+
+**DECISION — parameters.** Spring binds and validates them as typed request parameters (like the
+ingest body), so the controller holds no parsing code. Errors are a `400` problem+json with
+`detail: "Invalid query parameters"` and `errors: [{field, message}]`.
+- Every parameter is optional, and an empty value (`category=`, `limit=`) counts as absent: no
+  filter, or the default. (Unlike stats, where an empty `configId=` is an error.)
+- A value of the wrong type is reported on its own, since Spring stops at the first one:
+  - `configId` not a whole number → `must be a positive integer`;
+  - `from`/`to` not ISO-8601 with an offset (`Z` or `+02:00`, sent as `%2B02:00`) → the ingest
+    timestamp message. Date only, no offset, RFC-1123 dates and epoch numbers are all rejected, the
+    same as stats (they are bound as `OffsetDateTime`, since Spring's plain `Instant` conversion would
+    take the last two);
+  - `category`/`action` not an exact, uppercase enum name (`xss`, `SQLI`) → `must be one of [...]`
+    with the allowed values;
+  - `limit`/`offset` not an `int` → `must be an integer`.
+- Out-of-range values are reported together: `configId` ≤ 0 → `must be a positive integer`;
+  `limit` outside 1..100 → `must be greater than or equal to 1` / `less than or equal to 100`
+  (rejected, never clamped); `offset` < 0 → `must be greater than or equal to 0`.
+- `offset` has no maximum beyond fitting an `int`, as in the brief; the query timeout bounds deep pages.
+- `from` inclusive, `to` exclusive, on event `timestamp` (not `receivedAt`), as in stats. With both
+  given, `from >= to` → field `from`, `must be before to`.
+- A repeated parameter (`limit=5&limit=6`) takes its first value. Unknown parameters are ignored.
+
+**DECISION — response.** `{"total": n, "events": [...]}`, only what the brief asks for.
+- `total` counts every matching event, regardless of `limit` and `offset`.
+- `events` are full records: the ingested fields plus `receivedAt`, `attackType` and `threatScore`
+  (`attackType`/`threatScore` left out when not set; `geoLocation` is `null` when none was sent).
+- Order is `timestamp` desc, then `eventId` asc, so events with the same timestamp keep a fixed
+  order and pages never overlap or skip.
+- An `offset` past the end, or an unknown `configId`, is `200` with the real `total` and `[]`.
+
+**DECISION — implementation.** `EventStore.findSamples` runs `count(*)` and one
+`ORDER BY … LIMIT ? OFFSET ?` query in one read-only `REPEATABLE READ` transaction, so `total`
+matches the page while new events are saved. The WHERE clause is built only from fixed fragments
+with bound values. Both are bounded by `SET LOCAL statement_timeout`
+(`miniwsa.samples.query-timeout`, default `5s`); a cancelled query → `503` problem+json
+(`Query took too long; narrow the filters or the time range`), without `Retry-After` since the same
+request would time out again.
+
+**DECISION — indexes.** No new index. Measured with `EXPLAIN ANALYZE` on 1,000,000 events (20
+configs, 30 days): every filter shape answers in under 0.25 s, using `(config_id, timestamp)` or
+`(timestamp)`; the slowest is a deep `offset` (500,000 → 0.75 s). A `(category, timestamp DESC)`
+index would speed up a rare category without `configId` (≈80 ms → <1 ms) but costs 35 MB and a
+slower insert for queries already far under the timeout.
+
 ## 5. Data generator
 
 Realistic random events, attack waves (same IP + same path bursts), configurable count

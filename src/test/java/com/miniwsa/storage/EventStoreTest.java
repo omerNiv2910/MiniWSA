@@ -17,6 +17,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -40,7 +41,7 @@ class EventStoreTest {
         var dataSource = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
         Flyway.configure().dataSource(dataSource).load().migrate();
         jdbc = new JdbcTemplate(dataSource);
-        store = new EventStore(jdbc, new TransactionTemplate(new DataSourceTransactionManager(dataSource)));
+        store = new EventStore(jdbc, new TransactionTemplate(new DataSourceTransactionManager(dataSource)), Duration.ofSeconds(5));
     }
 
     @BeforeEach

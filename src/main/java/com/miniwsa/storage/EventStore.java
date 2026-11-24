@@ -1,30 +1,42 @@
 package com.miniwsa.storage;
 
+import com.miniwsa.config.MiniWsaProperties;
 import com.miniwsa.model.Action;
 import com.miniwsa.model.Category;
 import com.miniwsa.model.SecurityEvent;
+import com.miniwsa.model.Severity;
+import com.miniwsa.samples.SampleQuery;
+import com.miniwsa.samples.SampleResponse;
+import com.miniwsa.samples.SamplesQueryTimeoutException;
 import com.miniwsa.stats.StatsSummary;
 import com.miniwsa.stats.StatsSummary.AttackerStats;
 import com.miniwsa.stats.StatsSummary.CategoryStats;
 import com.miniwsa.stats.StatsSummary.PathStats;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 /**
- * Writes event batches to PostgreSQL and reads the statistics for a time window ({@link #summarize}).
+ * Writes event batches to PostgreSQL and reads them back: the statistics for a time window
+ * ({@link #summarize}) and pages of individual sample events ({@link #findSamples}).
  *
  * <p>A batch can be handled more than once (the worker retries it after a failure), so saving
  * must be safe to repeat. Every event is inserted with {@code ON CONFLICT (event_id) DO NOTHING},
@@ -33,6 +45,11 @@ import java.util.Objects;
  * starts clean.
  *
  * <p>{@code attackType} and {@code threatScore} are stored as given and may be null (not enriched).
+ *
+ * <p>Both reads run in one read-only REPEATABLE READ transaction each, so all their queries see the
+ * same snapshot even while new batches are being saved. The samples read is also bounded by
+ * {@code SET LOCAL statement_timeout}: a broad filter over many rows is cancelled by PostgreSQL instead
+ * of holding a connection, and surfaces as {@link SamplesQueryTimeoutException}.
  */
 @Component
 public class EventStore {
@@ -97,18 +114,56 @@ public class EventStore {
             LIMIT 10
             """;
 
+    // Samples: the optional filters, each a constant fragment with one bind parameter. Only the
+    // fragments for the filters given are joined, so there is no "(? IS NULL OR ...)" either.
+    private static final String SAMPLE_COLUMNS = """
+            event_id, timestamp, config_id, policy_id, client_ip, hostname, path, method, status_code,
+            user_agent, rule_id, rule_name, rule_message, severity, category, action, geo_country, geo_city,
+            request_size, response_size, received_at, attack_type, threat_score""";
+
+    private static final String SAMPLE_COUNT = "SELECT count(*) FROM events%s";
+
+    // Newest first; event_id breaks ties so pages are stable and never overlap.
+    private static final String SAMPLE_PAGE = "SELECT " + SAMPLE_COLUMNS + """
+
+            FROM events%s
+            ORDER BY timestamp DESC, event_id ASC
+            LIMIT ? OFFSET ?
+            """;
+
+    /** PostgreSQL's SQLSTATE for a statement cancelled by statement_timeout (or a cancel request). */
+    static final String QUERY_CANCELED = "57014";
+
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final TransactionTemplate readTx;
+    private final String setSamplesTimeout;
 
-    public EventStore(JdbcTemplate jdbc, TransactionTemplate tx) {
+    @Autowired
+    public EventStore(JdbcTemplate jdbc, TransactionTemplate tx, MiniWsaProperties props) {
+        this(jdbc, tx, props.samples().queryTimeout());
+    }
+
+    EventStore(JdbcTemplate jdbc, TransactionTemplate tx, Duration samplesQueryTimeout) {
         this.jdbc = jdbc;
         this.tx = tx;
-        // The stats queries run in one read-only snapshot, so they all see the same events (the
-        // total always equals the category and action sums) even while new batches are being saved.
+        // The reads run in one read-only snapshot, so all their queries see the same events (the
+        // stats total equals the category and action sums; the samples total matches the page) even
+        // while new batches are being saved. Own template: the shared one stays read-write.
         this.readTx = new TransactionTemplate(Objects.requireNonNull(tx.getTransactionManager()));
         this.readTx.setReadOnly(true);
         this.readTx.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        // SET LOCAL cannot take a bind parameter; the value is configuration, checked here.
+        this.setSamplesTimeout = "SET LOCAL statement_timeout = " + timeoutMillis(samplesQueryTimeout);
+    }
+
+    /** statement_timeout is an int of milliseconds, and 0 would mean "no timeout". */
+    private static long timeoutMillis(Duration timeout) {
+        if (timeout.compareTo(Duration.ofMillis(1)) < 0 || timeout.toMillis() > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                    "miniwsa.samples.query-timeout must be between 1ms and " + Integer.MAX_VALUE + "ms, was " + timeout);
+        }
+        return timeout.toMillis();
     }
 
     public void saveBatch(List<SecurityEvent> events) {
@@ -165,6 +220,115 @@ public class EventStore {
 
             return new StatsSummary(configId, from, to, total, byCategory, byAction, topAttackers, topTargetedPaths);
         });
+    }
+
+    /**
+     * The page of events matching every non-null filter in {@code q}, newest first (ties by eventId), and
+     * the total number of matches.
+     *
+     * @throws SamplesQueryTimeoutException if PostgreSQL cancelled the query for running too long
+     */
+    public SampleResponse findSamples(SampleQuery q) {
+        List<String> conditions = new ArrayList<>();
+        List<Object> args = new ArrayList<>();
+        if (q.configId() != null) {
+            conditions.add("config_id = ?");
+            args.add(q.configId());
+        }
+        if (q.from() != null) {
+            conditions.add("timestamp >= ?");
+            args.add(utc(q.from()));
+        }
+        if (q.to() != null) {
+            conditions.add("timestamp < ?");
+            args.add(utc(q.to()));
+        }
+        if (q.category() != null) {
+            conditions.add("category = ?");
+            args.add(q.category().name());
+        }
+        if (q.action() != null) {
+            conditions.add("action = ?");
+            args.add(q.action().name());
+        }
+        String where = conditions.isEmpty() ? "" : " WHERE " + String.join(" AND ", conditions);
+
+        List<Object> pageArgs = new ArrayList<>(args);
+        pageArgs.add(q.limit());
+        pageArgs.add(q.offset());
+
+        try {
+            return readTx.execute(status -> {
+                jdbc.execute(setSamplesTimeout);
+                long total = Objects.requireNonNull(
+                        jdbc.queryForObject(SAMPLE_COUNT.formatted(where), Long.class, args.toArray()));
+                if (q.offset() >= total) {
+                    return new SampleResponse(total, List.of());
+                }
+                List<SecurityEvent> events = jdbc.query(SAMPLE_PAGE.formatted(where),
+                        (rs, row) -> mapEvent(rs), pageArgs.toArray());
+                return new SampleResponse(total, events);
+            });
+        } catch (DataAccessException e) {
+            if (isTimeout(e)) {
+                throw new SamplesQueryTimeoutException("Samples query cancelled after its timeout", e);
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * Spring may translate a cancelled statement to {@link QueryTimeoutException} or to a more generic
+     * {@link DataAccessException}; the SQLSTATE is the reliable signal.
+     */
+    private static boolean isTimeout(DataAccessException e) {
+        if (e instanceof QueryTimeoutException) {
+            return true;
+        }
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof SQLException sql && QUERY_CANCELED.equals(sql.getSQLState())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The reverse of {@link #bindEvent}: nullable columns come back as null, not 0. */
+    private static SecurityEvent mapEvent(ResultSet rs) throws SQLException {
+        String country = rs.getString("geo_country");
+        String city = rs.getString("geo_city");
+        SecurityEvent.GeoLocation geo = country == null && city == null
+                ? null
+                : new SecurityEvent.GeoLocation(country, city);
+        SecurityEvent.Rule rule = new SecurityEvent.Rule(
+                rs.getString("rule_id"),
+                rs.getString("rule_name"),
+                rs.getString("rule_message"),
+                Severity.valueOf(rs.getString("severity")),
+                Category.valueOf(rs.getString("category")));
+        return new SecurityEvent(
+                rs.getString("event_id"),
+                instant(rs, "timestamp"),
+                rs.getLong("config_id"),
+                rs.getString("policy_id"),
+                rs.getString("client_ip"),
+                rs.getString("hostname"),
+                rs.getString("path"),
+                rs.getString("method"),
+                rs.getInt("status_code"),
+                rs.getString("user_agent"),
+                rule,
+                Action.valueOf(rs.getString("action")),
+                geo,
+                rs.getObject("request_size", Long.class),
+                rs.getObject("response_size", Long.class),
+                instant(rs, "received_at"),
+                rs.getString("attack_type"),
+                rs.getObject("threat_score", Integer.class));
+    }
+
+    private static Instant instant(ResultSet rs, String column) throws SQLException {
+        return rs.getObject(column, OffsetDateTime.class).toInstant();
     }
 
     private static void bindEvent(PreparedStatement ps, SecurityEvent e) throws SQLException {
