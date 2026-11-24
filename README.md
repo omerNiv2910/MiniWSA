@@ -4,7 +4,7 @@ Mini Security Analytics Pipeline: a Spring Boot service that ingests security ev
 
 ## Architecture
 
-- **Ingestion:** `POST /v1/events/ingest` validates the request and puts the whole batch on a bounded in-memory queue, then returns `201` with `{"status": 201, "message": "Events accepted for processing", "accepted": n}` (the events are not echoed back, since they are enriched later). When the queue has no room for the batch, nothing is queued and the response is `503` with `Retry-After`.
+- **Ingestion:** `POST /v1/events/ingest` takes a JSON array of events, or a single event object. It validates the request and puts the whole batch on a bounded in-memory queue, then returns `201` with `{"status": 201, "message": "Events accepted for processing", "accepted": n}` (the events are not echoed back, since they are enriched later). When the queue has no room for the batch, nothing is queued and the response is `503` with `Retry-After`.
 - **Processing:** a background worker in the same application takes batches from the queue, stamps `receivedAt` (the time it takes the batch), classifies and scores them (Redis holds each client IP's recent events for the 10-minute window) and writes them to PostgreSQL. A failed write is retried with backoff until it succeeds. Queued events live only in memory: they are lost if the process dies (a normal shutdown drains the queue first).
 - **Storage:** PostgreSQL, schema managed by Flyway (`src/main/resources/db/migration`). Each batch is one transaction: events are inserted with `ON CONFLICT (event_id) DO NOTHING`, so a retried batch is stored exactly once.
 - **Stats:** `GET /v1/stats/summary` is answered in the request, straight from PostgreSQL (not through the queue), with five `GROUP BY` queries (total, per category, per action, top 10 client IPs, top 10 paths) over the events in the time window, run in one read-only snapshot. Events still waiting in the queue are not counted yet.
@@ -41,6 +41,35 @@ Ingestion and storage are connected by a bounded queue in the application's own 
 | `poll-timeout` | `500ms` | Longest the worker waits for an event when the queue is empty, before checking for shutdown |
 | `retry-initial-interval` / `retry-max-interval` | `1s` / `30s` | Backoff between retries of a failed batch |
 | `shutdown-timeout` | `10s` | Time the worker gets on shutdown to store what is still queued |
+
+## Design choice: PostgreSQL for storage
+
+Enriched events are stored in one PostgreSQL table, `events` (one row per event, nested objects flattened into columns), not in a document store, a search engine or a column store.
+
+**Why**
+
+- **The data has a fixed shape.** Every event has the same fields, so typed columns with `NOT NULL` and `CHECK` constraints (`threat_score BETWEEN 0 AND 100`) reject bad rows at the database, and Flyway migrations change the schema in versioned, reviewable steps.
+- **Every read is a filter plus a count.** Stats, samples and timeseries are time-range filters with `GROUP BY` (`category`, `action`, top IPs and paths, `date_bin` buckets). SQL does this in the database, so only small result rows come back to Java. The `(config_id, timestamp DESC)` and `(timestamp DESC)` indexes serve both "newest first" pages and time-range scans.
+- **Exactly-once storage comes for free.** `event_id` is the primary key and each batch is inserted in one transaction with `ON CONFLICT (event_id) DO NOTHING`, so a batch retried after a failure is stored once. That is what lets the worker retry blindly.
+- **Consistent answers.** Each stats or samples request runs its queries in one read-only snapshot, so the total and the per-category counts always add up, even while the worker is writing.
+- **Protection from expensive queries.** PostgreSQL cancels a samples or timeseries query that runs past its timeout (`miniwsa.samples.query-timeout`, `miniwsa.timeseries.query-timeout`), and the API turns that into `503` instead of tying up a connection.
+- **Simple to run and test.** One `postgres:17` container in Docker Compose, and tests run against a real PostgreSQL with Testcontainers and the production migrations, not an in-memory imitation.
+
+**Trade-offs and how they are handled**
+
+| Trade-off | Handling |
+|---|---|
+| Counting raw rows gets slower as the table grows | Queries are bounded by the time window, and samples and timeseries queries are cancelled at their timeout. Measured: a 30-day timeseries over 1,000,000 events takes about 300 ms (see [Timeseries](#timeseries)). |
+| One database node limits write throughput | Writes are batched (up to `batch-size` events per transaction), which keeps the write rate well below what a single node handles at this service's scale. |
+| Not built for full-text search over paths or user agents | The APIs only need exact-match filters, which B-tree indexes handle. |
+
+**Scaling to big-data volumes** (the path, without changing database):
+
+1. **Per-minute rollups.** An `event_rollups_minute` table (designed in `V1`, commented out) keeps counts per tenant, minute, category, severity and action, updated by upsert on each batch. A stats or timeseries window then reads at most 84 rows per tenant-minute instead of every event, so its cost depends on the window length, not the event volume.
+2. **Time partitioning.** Partition `events` by `timestamp` (for example one partition per day). Queries for a time window touch only the matching partitions, and retention becomes dropping an old partition instead of a large `DELETE`.
+3. **Read replicas** for the stats and samples endpoints, so reads don't compete with ingest.
+
+**When to change it:** if raw-event volume outgrows a single partitioned PostgreSQL even with rollups, or ad-hoc analytics over arbitrary columns becomes the main use, move raw events to a columnar analytics store (such as ClickHouse) and keep PostgreSQL for rollups and configuration. Only `storage/EventStore` talks to the database, so that change stays inside the storage package.
 
 ## Stats summary
 
@@ -220,29 +249,58 @@ The read APIs (`/v1/stats/summary`, `/v1/stats/timeseries` and `/v1/events/sampl
 
 ## Data generator
 
-`com.miniwsa.generator.GeneratorCli` makes a configurable number of random but realistic security events over the last 7 days and outputs them as a JSON array: exactly the body `POST /v1/events/ingest` accepts. It does not call the API or touch the database. It runs on its own, without the Spring application, from the service's jar:
+`com.miniwsa.generator.GeneratorCli` makes a configurable number of random security events over the last 7 days and writes them to a file as a JSON array, a body `POST /v1/events/ingest` accepts as-is. It does not call the API or touch the database, and it runs on its own: the app, PostgreSQL and Redis don't need to be up.
+
+### How to run it
+
+Run these from the project root.
+
+**1. Build the jar.** Step 2 runs the generator from this jar, so build it before the first run, and build it again whenever you change the generator's code; otherwise step 2 still runs the old version.
 
 ```bash
 ./mvnw -q package -DskipTests
-
-# with the defaults: 1,000 events to generator/events.json
-java -cp target/miniwsa-0.0.1-SNAPSHOT.jar -Dloader.main=com.miniwsa.generator.GeneratorCli \
-  org.springframework.boot.loader.launch.PropertiesLauncher
-
-# or choose both
-java -cp target/miniwsa-0.0.1-SNAPSHOT.jar -Dloader.main=com.miniwsa.generator.GeneratorCli \
-  org.springframework.boot.loader.launch.PropertiesLauncher --count 50000 --output generator/big.json
-
-# the file can be fed to the ingestion API as-is
-curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data @generator/events.json
 ```
+
+On Windows PowerShell use `.\mvnw.cmd -q package -DskipTests`.
+
+**2. Run the generator:**
+
+```bash
+java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher
+```
+
+It prints `wrote 1000 events to data/events.json`. The jar's normal entry point starts the Spring app; `-Dloader.main=...GeneratorCli` with `PropertiesLauncher` runs the generator's `main` instead. Keep the quotes around `"-Dloader.main=..."`: without them PowerShell splits the argument at the dot and Java fails with `Could not find or load main class .main=...`.
+
+Options go at the end of the command:
+
+```bash
+# 5,000 events into data/my-events.json
+java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher --count 5000 --output data/my-events.json
+
+# show the options
+java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher --help
+```
+
+From an IDE you can instead run `GeneratorCli.main` directly, with the options as program arguments (e.g. `--count 5000 --output data/my-events.json`) and the project root as the working directory.
+
+**3. Optional: feed the file to the ingestion API** while the app is running:
+
+```bash
+curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data @data/events.json
+```
+
+### Options
+
+Both options are optional; each one you leave out uses its default.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--count <n>` | `1000` | Number of events (1 to 100,000) |
-| `--output <file>` | `generator/events.json` | File to write the JSON array to; missing folders are created |
+| `--count <n>` | `1000` | How many events to generate, a whole number from 1 to 100,000. Exactly this many events are written: 20% of them form the attack wave, the rest are background. The upper limit matches the server's default queue capacity, so one file always fits in one ingest request. |
+| `--output <file>` | `data/events.json` | The file the events are written to, relative to the folder you run from (or an absolute path). Missing folders are created, and an existing file is overwritten. |
 
-Exit codes: `0` done, `1` file not written, `2` bad option.
+If an option is given twice, the last value wins. A bad value (e.g. `--count 0` or `--count abc`), an unknown option, or an option without a value prints an error and the usage text.
+
+Exit codes: `0` done, `1` the file could not be written, `2` bad option.
 
 **What the data looks like:**
 
@@ -251,7 +309,7 @@ Exit codes: `0` done, `1` file not written, `2` bad option.
 - **Attack wave (20% of the events):** one client IP and one path, picked at random, with all their timestamps within 5 seconds of one random moment in the week. Their other fields are random like any other event.
 - **Background (the rest):** everything random from the lists, timestamps spread over the whole week. No timestamp is in the future.
 - **Valid input:** every event passes the ingest validation. Server-set fields (`receivedAt`, `attackType`, `threatScore`) are never written.
-- **Time order:** the array is sorted by timestamp, so when it is fed to the API the server sees each IP's earlier events first. At most 100,000 events, the server's default queue capacity, so one file fits in one request.
+- **Time order:** the events are sorted by timestamp, so when it is fed to the API the server sees each IP's earlier events first. At most 100,000 events, the server's default queue capacity, so one file fits in one request.
 
 ## Package layout
 

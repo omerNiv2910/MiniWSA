@@ -18,8 +18,8 @@ import java.util.Random;
  * Command-line entry point of the data generator. It runs on its own, without the Spring application, and never
  * touches the API or the database.
  *
- * <p>Generates {@code --count} events and writes them to the {@code --output} file as one JSON array: exactly the
- * body {@code POST /v1/events/ingest} accepts. Both options have defaults, so a bare run works.
+ * <p>Generates {@code --count} events and writes them to the {@code --output} file as one JSON array,
+ * a body {@code POST /v1/events/ingest} accepts as-is. Both options have defaults, so a bare run works.
  *
  * <p>Exit codes: 0 success, 1 the file could not be written, 2 the command line was wrong.
  */
@@ -30,7 +30,7 @@ public final class GeneratorCli {
     static final int USAGE = 2;
 
     static final int DEFAULT_COUNT = 1000;
-    static final String DEFAULT_OUTPUT = "generator/events.json";
+    static final String DEFAULT_OUTPUT = "data/events.json";
 
     static final String USAGE_TEXT = """
             Usage: GeneratorCli [--count <n>] [--output <file>]
@@ -39,8 +39,8 @@ public final class GeneratorCli {
             from the same IP hitting the same path), as a JSON array for POST /v1/events/ingest.
 
               --count <n>       number of events, 1 to 100000 (default 1000)
-              --output <file>   file to write the JSON array to; missing folders are created
-                                (default generator/events.json)
+              --output <file>   file to write the events to; missing folders are created
+                                (default data/events.json)
               --help            show this text
             """;
 
@@ -99,7 +99,7 @@ public final class GeneratorCli {
     static String toJson(List<SecurityEvent> events) {
         StringBuilder sb = new StringBuilder("[\n");
         for (int i = 0; i < events.size(); i++) {
-            sb.append(MAPPER.writeValueAsString(events.get(i)));
+            sb.append("  ").append(MAPPER.writeValueAsString(events.get(i)));
             sb.append(i < events.size() - 1 ? ",\n" : "\n");
         }
         return sb.append("]\n").toString();
