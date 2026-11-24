@@ -218,6 +218,41 @@ The read APIs (`/v1/stats/summary`, `/v1/stats/timeseries` and `/v1/events/sampl
 | `limit` | `100` | Requests per client IP per window (at least 1) |
 | `window` | `1m` | Window length (at least `1s`) |
 
+## Data generator
+
+`com.miniwsa.generator.GeneratorCli` makes a configurable number of random but realistic security events over the last 7 days and outputs them as a JSON array: exactly the body `POST /v1/events/ingest` accepts. It does not call the API or touch the database. It runs on its own, without the Spring application, from the service's jar:
+
+```bash
+./mvnw -q package -DskipTests
+
+# with the defaults: 1,000 events to generator/events.json
+java -cp target/miniwsa-0.0.1-SNAPSHOT.jar -Dloader.main=com.miniwsa.generator.GeneratorCli \
+  org.springframework.boot.loader.launch.PropertiesLauncher
+
+# or choose both
+java -cp target/miniwsa-0.0.1-SNAPSHOT.jar -Dloader.main=com.miniwsa.generator.GeneratorCli \
+  org.springframework.boot.loader.launch.PropertiesLauncher --count 50000 --output generator/big.json
+
+# the file can be fed to the ingestion API as-is
+curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data @generator/events.json
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--count <n>` | `1000` | Number of events (1 to 100,000) |
+| `--output <file>` | `generator/events.json` | File to write the JSON array to; missing folders are created |
+
+Exit codes: `0` done, `1` file not written, `2` bad option.
+
+**What the data looks like:**
+
+- **Random from lists:** `ReferenceData` holds one list per field: config ids, policy ids, client IPs, hostnames, paths, methods, user agents, rule names, rule messages, severities, categories, actions and geo locations. Every field of an event is picked at random from its own list, independently of the other fields. The event id and the rule id are random UUIDs; event ids never repeat within a run.
+- **Computed fields:** `requestSize` is 200 to 2,000 bytes; `responseSize` is 100 to 600 bytes for a `DENY` and 500 to 50,500 otherwise. The status code follows the action: a `DENY` gets `429` (rate limit), `503` (DoS) or `403`; anything else is mostly `200`, sometimes `404`, `302` or `500`.
+- **Attack wave (20% of the events):** one client IP and one path, picked at random, with all their timestamps within 5 seconds of one random moment in the week. Their other fields are random like any other event.
+- **Background (the rest):** everything random from the lists, timestamps spread over the whole week. No timestamp is in the future.
+- **Valid input:** every event passes the ingest validation. Server-set fields (`receivedAt`, `attackType`, `threatScore`) are never written.
+- **Time order:** the array is sorted by timestamp, so when it is fed to the API the server sees each IP's earlier events first. At most 100,000 events, the server's default queue capacity, so one file fits in one request.
+
 ## Package layout
 
 | Package | Responsibility |
@@ -232,7 +267,7 @@ The read APIs (`/v1/stats/summary`, `/v1/stats/timeseries` and `/v1/events/sampl
 | `stats` | Stats summary and timeseries response types, and the timeseries intervals |
 | `samples` | Samples query and response types |
 | `ratelimit` | Rate limiting: the interceptor in front of the read endpoints, the Redis per-IP counter, the fixed-window maths and the 429 exception |
-| `generator` | Synthetic data generator |
+| `generator` | Synthetic data generator: reference data, event and wave generation, and the command line that outputs the events as an ingest request body |
 | `config` | Application properties, shared beans and the rate-limit path registration |
 
 ## Running locally
