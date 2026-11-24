@@ -193,8 +193,6 @@ curl "localhost:8080/v1/stats/timeseries?configId=14227&from=2026-05-20T14:00:00
 
 The cost grows with the number of events in the window, not with the number of buckets, so no new index is needed. At much larger volumes the scale-out path is a per-minute rollup table, as for the summary.
 
-`scripts/timeseries-curl-tests.sh` sends a few test events and runs 17 example requests (successes and errors) against a running app.
-
 ## Rate limiting
 
 The read APIs (`/v1/stats/summary`, `/v1/stats/timeseries` and `/v1/events/samples`) allow **100 requests per minute per client IP**. The next request in that minute gets `429`:
