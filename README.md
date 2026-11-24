@@ -195,12 +195,36 @@ The cost grows with the number of events in the window, not with the number of b
 
 `scripts/timeseries-curl-tests.sh` sends a few test events and runs 17 example requests (successes and errors) against a running app.
 
+## Rate limiting
+
+The read APIs (`/v1/stats/summary`, `/v1/stats/timeseries` and `/v1/events/samples`) allow **100 requests per minute per client IP**. The next request in that minute gets `429`:
+
+```json
+{ "title": "Too Many Requests", "status": 429, "detail": "Rate limit exceeded; try again later" }
+```
+
+- **One budget per IP, shared by the three endpoints.** 60 samples requests plus 40 summary requests use it up.
+- **Not limited:** `POST /v1/events/ingest` (it has its own backpressure, the queue's `503`) and `/actuator/**`.
+- **Every request counts,** including ones that end up `400`: the check runs before the parameters are validated. A rejected request never reaches the controller or PostgreSQL.
+- **Fixed window:** the minute is the clock minute (12:00:00–12:00:59). At 12:01:00 every IP starts again from 0. A client can therefore send 100 requests at 12:00:59 and another 100 at 12:01:00, up to 2× the limit across a boundary. That is the accepted cost of one counter per IP; a sliding window would need a sorted set per IP.
+- **Fail-open:** if Redis is down or slow (1s timeout), requests are let through and a warning is logged at most once per window. A Redis outage does not take the read API down.
+
+**How it works:** a Spring MVC interceptor (`RateLimitInterceptor`, registered on the three paths by `RateLimitWebConfig`) runs before the controller. It asks `RedisRateLimiter`, which runs one Lua script on the key `miniwsa:ratelimit:<ip>:<window start, epoch seconds>`: `INCR`, and on the first request of the window `PEXPIRE` (window + 5s), so old counters delete themselves. Redis is shared by all instances, so the limit holds when the service is scaled out, and the script makes the count and the expiry one atomic step. Over the limit, the interceptor throws and `ApiExceptionHandler` answers `429`.
+
+**Client IP:** the counter key is `request.getRemoteAddr()`. With `server.forward-headers-strategy: native`, Tomcat replaces it with the client IP from `X-Forwarded-For` **only** when the request comes from a trusted proxy (`server.tomcat.remoteip.internal-proxies`). The default trusts all private ranges, including the Docker bridge (`172.17.0.1`); behind a proxy, set it to that proxy's address. Without a proxy, set it to `""` so a client can't choose its own IP, and so its own budget, by sending the header.
+
+| Setting (`miniwsa.rate-limit.*`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | `false` turns rate limiting off entirely |
+| `limit` | `100` | Requests per client IP per window (at least 1) |
+| `window` | `1m` | Window length (at least `1s`) |
+
 ## Package layout
 
 | Package | Responsibility |
 |---|---|
 | `model` | Security event model and its enums, shared by every stage |
-| `api` | REST controllers and response DTOs |
+| `api` | REST controllers and response DTOs, the rate-limit interceptor and error handling |
 | `ingest` | Stamping events and queueing them |
 | `queue` | Bounded in-memory event queue |
 | `consumer` | Worker that takes batches off the queue and stores them |
@@ -208,8 +232,9 @@ The cost grows with the number of events in the window, not with the number of b
 | `storage` | PostgreSQL event writes, stats, timeseries and samples queries, and the shared read-query timeout |
 | `stats` | Stats summary and timeseries response types, and the timeseries intervals |
 | `samples` | Samples query and response types |
+| `ratelimit` | Redis per-IP request counter and fixed-window maths |
 | `generator` | Synthetic data generator |
-| `config` | Application properties and shared beans |
+| `config` | Application properties, shared beans and the rate-limit path registration |
 
 ## Running locally
 
