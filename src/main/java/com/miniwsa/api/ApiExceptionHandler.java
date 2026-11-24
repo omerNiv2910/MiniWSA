@@ -1,5 +1,6 @@
 package com.miniwsa.api;
 
+import com.miniwsa.alerts.AlertDefinition;
 import com.miniwsa.ingest.EventPublishException;
 import com.miniwsa.ratelimit.RateLimitExceededException;
 import com.miniwsa.storage.ReadQueryTimeoutException;
@@ -21,15 +22,18 @@ import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 import tools.jackson.core.JacksonException;
+import tools.jackson.core.exc.InputCoercionException;
 import tools.jackson.core.exc.StreamReadException;
 import tools.jackson.databind.exc.InvalidFormatException;
 import tools.jackson.databind.exc.MismatchedInputException;
 
+import java.lang.reflect.RecordComponent;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -41,8 +45,8 @@ import java.util.stream.Collectors;
 
 /**
  * Renders request errors as problem details with an {@code errors} list: {@link EventError}s for the
- * ingest body, so clients can see which event and which field is wrong, and {@link QueryParamError}s
- * for query parameters.
+ * ingest body, so clients can see which event and which field is wrong, {@link QueryParamError}s
+ * for query parameters, and {@link AlertFieldError}s for an alert definition body.
  *
  * <p>Extending {@link ResponseEntityExceptionHandler} replaces Spring Boot's default problem-details
  * handler, so every other standard MVC exception still gets a problem-details response.
@@ -52,6 +56,13 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     /** Sent with a 503 so clients back off briefly before retrying. */
     private static final String RETRY_AFTER_SECONDS = "5";
+
+    static final String INVALID_ALERT_DETAIL = "Invalid alert definition";
+
+    /** Alert body errors are listed in the order the fields appear in {@link AlertDefinition}. */
+    private static final List<String> ALERT_FIELD_ORDER = Arrays.stream(AlertDefinition.class.getRecordComponents())
+            .map(RecordComponent::getName)
+            .toList();
 
     /** Shown for a bad timestamp, in an event body or in a query parameter. */
     static final String ISO_TIMESTAMP_MESSAGE = "must be an ISO-8601 timestamp, e.g. 2026-05-20T14:32:10Z";
@@ -99,6 +110,14 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @Override
     protected ResponseEntity<Object> handleMethodArgumentNotValid(
             MethodArgumentNotValidException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        if (ex.getBindingResult().getTarget() instanceof AlertDefinition) {
+            List<AlertFieldError> errors = ex.getBindingResult().getFieldErrors().stream()
+                    .map(fe -> new AlertFieldError(fe.getField(), fe.getDefaultMessage()))
+                    .sorted(Comparator.comparingInt((AlertFieldError e) -> ALERT_FIELD_ORDER.indexOf(e.field()))
+                            .thenComparing(AlertFieldError::message))
+                    .toList();
+            return badAlert(ex, errors, headers, request);
+        }
         List<EventError> errors = new ArrayList<>();
         for (FieldError fe : ex.getBindingResult().getFieldErrors()) {
             errors.add(new EventError(0, fe.getField(), fe.getDefaultMessage()));
@@ -120,11 +139,20 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         if (!(ex.getCause() instanceof JacksonException je)) {
             return badRequest(ex, "Request body is missing or unreadable", List.of(), headers, request);
         }
-        if (je instanceof StreamReadException) {
+        // A number too big for its field is a StreamReadException too, but the JSON itself is fine: for
+        // an alert body it is reported against the field below.
+        boolean alertNumberOverflow = je instanceof InputCoercionException && isAlertsRequest(request);
+        if (je instanceof StreamReadException && !alertNumberOverflow) {
             return badRequest(ex, "Request body is not valid JSON", List.of(), headers, request);
         }
 
         List<JacksonException.Reference> path = je.getPath();
+        if (isAlertsRequest(request)) {
+            // Jackson stops at the first problem, so at most one error, e.g. a bad category.
+            return badAlert(ex, List.of(path.isEmpty()
+                    ? new AlertFieldError("", "must be a JSON object")
+                    : new AlertFieldError(fieldPath(path), alertParseMessage(je))), headers, request);
+        }
         if (path.isEmpty()) {
             return badRequest(ex, "Request body must be an event object or an array of events",
                     List.of(), headers, request);
@@ -222,6 +250,36 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Invalid query parameters");
         body.setProperty("errors", errors);
         return handleExceptionInternal(ex, body, headers, HttpStatus.BAD_REQUEST, request);
+    }
+
+    private ResponseEntity<Object> badAlert(Exception ex, List<AlertFieldError> errors,
+                                            HttpHeaders headers, WebRequest request) {
+        ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, INVALID_ALERT_DETAIL);
+        body.setProperty("errors", errors);
+        return handleExceptionInternal(ex, body, headers, HttpStatus.BAD_REQUEST, request);
+    }
+
+    private static boolean isAlertsRequest(WebRequest request) {
+        return request instanceof ServletWebRequest servlet
+                && servlet.getRequest().getRequestURI().startsWith("/v1/alerts/");
+    }
+
+    /** Like {@link #parseMessage}, plus a short message for a number of the wrong type or size. */
+    private static String alertParseMessage(JacksonException e) {
+        if (e instanceof InputCoercionException) {
+            return "must be an integer";
+        }
+        if (e instanceof MismatchedInputException mie && !(e instanceof InvalidFormatException ife
+                && ife.getTargetType() != null && ife.getTargetType().isEnum())) {
+            Class<?> target = mie.getTargetType();
+            if (target == Integer.class || target == int.class) {
+                return "must be an integer";
+            }
+            if (target == String.class) {
+                return "must be a string";
+            }
+        }
+        return parseMessage(e);
     }
 
     private static boolean isQueryParameter(ParameterValidationResult result) {
