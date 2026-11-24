@@ -200,7 +200,8 @@ The cost grows with the number of events in the window, not with the number of b
 The read APIs (`/v1/stats/summary`, `/v1/stats/timeseries` and `/v1/events/samples`) allow **100 requests per minute per client IP**. The next request in that minute gets `429`:
 
 ```json
-{ "title": "Too Many Requests", "status": 429, "detail": "Rate limit exceeded; try again later" }
+{ "title": "Too Many Requests", "status": 429, "detail": "Rate limit exceeded; try again later",
+  "instance": "/v1/stats/summary" }
 ```
 
 - **One budget per IP, shared by the three endpoints.** 60 samples requests plus 40 summary requests use it up.
