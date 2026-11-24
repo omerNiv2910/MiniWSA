@@ -136,15 +136,6 @@ ingest body), so the controller holds no parsing code. Errors are a `400` proble
 `ORDER BY … LIMIT ? OFFSET ?` query in one read-only `REPEATABLE READ` transaction, so `total`
 matches the page while new events are saved. The WHERE clause is built only from fixed fragments
 with bound values. Both are bounded by `SET LOCAL statement_timeout`
-(`miniwsa.samples.query-timeout`, default `5s`); a cancelled query → `503` problem+json
-(`Query took too long; narrow the filters or the time range`), without `Retry-After` since the same
-request would time out again.
-
-**DECISION — indexes.** No new index. Measured with `EXPLAIN ANALYZE` on 1,000,000 events (20
-configs, 30 days): every filter shape answers in under 0.25 s, using `(config_id, timestamp)` or
-`(timestamp)`; the slowest is a deep `offset` (500,000 → 0.75 s). A `(category, timestamp DESC)`
-index would speed up a rare category without `configId` (≈80 ms → <1 ms) but costs 35 MB and a
-slower insert for queries already far under the timeout.
 
 ## 5. Data generator
 
