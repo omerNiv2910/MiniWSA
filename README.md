@@ -8,6 +8,7 @@ Mini Security Analytics Pipeline: a Spring Boot service that ingests security ev
 - **Processing:** a background worker in the same application takes batches from the queue, stamps `receivedAt` (the time it takes the batch), classifies and scores them (Redis holds each client IP's recent events for the 10-minute window) and writes them to PostgreSQL. A failed write is retried with backoff until it succeeds. Queued events live only in memory: they are lost if the process dies (a normal shutdown drains the queue first).
 - **Storage:** PostgreSQL, schema managed by Flyway (`src/main/resources/db/migration`). Each batch is one transaction: events are inserted with `ON CONFLICT (event_id) DO NOTHING`, so a retried batch is stored exactly once.
 - **Stats:** `GET /v1/stats/summary` is answered in the request, straight from PostgreSQL (not through the queue), with five `GROUP BY` queries (total, per category, per action, top 10 client IPs, top 10 paths) over the events in the time window, run in one read-only snapshot. Events still waiting in the queue are not counted yet.
+- **Samples:** `GET /v1/events/samples` is also answered in the request, straight from PostgreSQL: a count and one page of matching events, newest first, in one read-only snapshot, cancelled by PostgreSQL if it runs past the query timeout.
 
 ## Design choice: in-memory event queue
 
@@ -81,6 +82,69 @@ curl "localhost:8080/v1/stats/summary?configId=14227&from=2026-05-20T14:00:00Z&t
 
 **Performance:** each of the five queries reads the matching events, using the `(config_id, timestamp)` index for one configuration and the `(timestamp)` index for all of them. Its cost grows with the number of events in the window, so very wide windows over a large table are slow. The scale-out path is per-minute rollup tables, so a window reads at most one row per minute and group instead of every event.
 
+## Samples
+
+`GET /v1/events/samples?configId={configId}&from={ISO8601}&to={ISO8601}&category={category}&action={action}&limit={limit}&offset={offset}` returns the individual events matching the filters, newest first, one page at a time, with the total number of matches.
+
+```bash
+curl "localhost:8080/v1/events/samples?configId=14227&category=INJECTION&action=DENY&limit=2"
+```
+
+```json
+{
+  "total": 1234,
+  "events": [
+    {
+      "eventId": "evt_8f3a2b1c",
+      "timestamp": "2026-05-20T14:32:10Z",
+      "configId": 14227,
+      "policyId": "pol_web1",
+      "clientIp": "203.0.113.42",
+      "hostname": "www.example.com",
+      "path": "/api/v1/login",
+      "method": "POST",
+      "statusCode": 403,
+      "userAgent": "Mozilla/5.0",
+      "rule": { "id": "950001", "name": "SQL_INJECTION", "message": "SQL injection attempt",
+                "severity": "CRITICAL", "category": "INJECTION" },
+      "action": "DENY",
+      "geoLocation": { "country": "US", "city": "Ashburn" },
+      "requestSize": 512,
+      "responseSize": 128,
+      "receivedAt": "2026-05-20T14:32:11Z",
+      "attackType": "SQL/Command Injection",
+      "threatScore": 75
+    }
+  ]
+}
+```
+
+- Every parameter is optional; an empty value (`category=`) is the same as leaving it out. Without filters the newest events of all configurations are returned.
+- `from` (inclusive) and `to` (exclusive) filter on the event `timestamp`. They are ISO-8601 with an offset, as in stats: send a `+` offset as `%2B` (`2026-05-20T16:00:00%2B02:00`).
+- `category` and `action` must be exact, uppercase enum names (`INJECTION`, `DENY`).
+- `limit` is 1–100 (default 20); a larger value is rejected, not cut down. `offset` is 0 or more (default 0).
+- `total` counts every match, whatever the `limit` and `offset`. Events with the same timestamp are ordered by `eventId`, so pages never overlap. An `offset` past the end, or an unknown `configId`, gives `200` with `"events": []`.
+- Bad parameters return `400` problem+json with `errors: [{field, message}]`. Out-of-range values are all listed together; a value of the wrong type (`limit=abc`, `category=xss`) is reported on its own.
+- A query that runs past `miniwsa.samples.query-timeout` (default `5s`) is cancelled by PostgreSQL and returns `503`: narrow the filters or the time range.
+
+**Performance:** measured with `EXPLAIN ANALYZE` on 1,000,000 events (20 configurations, 30 days of data), using the existing `(config_id, timestamp)` and `(timestamp)` indexes:
+
+| Query | Matches | Count + page |
+|---|---|---|
+| `configId` + 1 day | 1,654 | 0.5 ms |
+| 1 day, all configurations | 33,060 | 5 ms |
+| No filters | 1,000,000 | 80 ms |
+| A rare `category` only | 967 | 80 ms |
+| `configId` + a rare `category` | 46 | 200 ms |
+| `offset=500000` | 1,000,000 | 0.75 s |
+
+No extra index is needed: a `(category, timestamp DESC)` index would make a rare category without `configId` near-instant, but every query is already far under the timeout and the index would cost space and slow every insert.
+
+**Known limits:**
+- **Deep pages get slower.** `OFFSET` makes PostgreSQL read and discard every skipped row, so the cost grows with `offset`; the query timeout bounds it. The fix is keyset pagination: the client sends the last `(timestamp, eventId)` it saw and the query continues from there, so every page costs the same.
+- **Pages shift while events arrive.** New events go to the front, so paging through live data can show an event twice. Keyset pagination fixes this too.
+- **Events still in the ingest queue are not returned yet**, as with stats.
+
 ## Package layout
 
 | Package | Responsibility |
@@ -91,8 +155,9 @@ curl "localhost:8080/v1/stats/summary?configId=14227&from=2026-05-20T14:00:00Z&t
 | `queue` | Bounded in-memory event queue |
 | `consumer` | Worker that takes batches off the queue and stores them |
 | `enrichment` | Classification and threat scoring |
-| `storage` | PostgreSQL event writes and stats queries |
+| `storage` | PostgreSQL event writes, stats and samples queries |
 | `stats` | Stats response types |
+| `samples` | Samples query, response and timeout types |
 | `generator` | Synthetic data generator |
 | `config` | Application properties and shared beans |
 
