@@ -37,6 +37,10 @@ miniwsa:
     # A samples request (count plus one page) is cancelled in PostgreSQL after this long, so a broad
     # filter cannot hold a connection for long; the API then answers 503. Defaults to 5s if left out.
     query-timeout: 5s
+  timeseries:
+    # A timeseries request (one bucketed count over the window) is cancelled in PostgreSQL after this
+    # long; the API then answers 503. Defaults to 5s if left out.
+    query-timeout: 5s
 
 management:
   endpoints:

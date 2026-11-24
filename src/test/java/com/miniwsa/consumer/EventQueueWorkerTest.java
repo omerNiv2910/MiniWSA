@@ -28,7 +28,7 @@ import static org.mockito.Mockito.verify;
 class EventQueueWorkerTest {
 
     private final MiniWsaProperties props = new MiniWsaProperties(new MiniWsaProperties.Queue(100, 10,
-            Duration.ofMillis(20), Duration.ofMillis(10), Duration.ofMillis(40), Duration.ofSeconds(5)), null);
+            Duration.ofMillis(20), Duration.ofMillis(10), Duration.ofMillis(40), Duration.ofSeconds(5)), null, null);
     private final EventQueue queue = new EventQueue(props);
     private final EventBatchHandler handler = mock(EventBatchHandler.class);
     private final EventQueueWorker worker = new EventQueueWorker(queue, handler, props);

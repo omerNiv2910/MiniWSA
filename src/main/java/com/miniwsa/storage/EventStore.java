@@ -7,11 +7,12 @@ import com.miniwsa.model.SecurityEvent;
 import com.miniwsa.model.Severity;
 import com.miniwsa.samples.SampleQuery;
 import com.miniwsa.samples.SampleResponse;
-import com.miniwsa.samples.SamplesQueryTimeoutException;
 import com.miniwsa.stats.StatsSummary;
 import com.miniwsa.stats.StatsSummary.AttackerStats;
 import com.miniwsa.stats.StatsSummary.CategoryStats;
 import com.miniwsa.stats.StatsSummary.PathStats;
+import com.miniwsa.stats.Timeseries;
+import com.miniwsa.stats.TimeseriesInterval;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.QueryTimeoutException;
@@ -29,6 +30,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,9 +38,10 @@ import java.util.Objects;
 
 /**
  * Writes event batches to PostgreSQL and reads them back: the statistics for a time window
- * ({@link #summarize}) and pages of individual sample events ({@link #findSamples}).
+ * ({@link #summarize}), event counts per time bucket ({@link #timeseries}) and pages of individual
+ * sample events ({@link #findSamples}).
  *
- * <p>A batch can be handled more than once (the worker retries it after a failure), so saving
+ * <p>Ingestion: A batch can be handled more than once (the worker retries it after a failure), so saving
  * must be safe to repeat. Every event is inserted with {@code ON CONFLICT (event_id) DO NOTHING},
  * so an event already stored (including a repeat of an eventId earlier in the same batch) is
  * skipped. The whole batch is one transaction: a failed attempt rolls back entirely and the retry
@@ -46,10 +49,11 @@ import java.util.Objects;
  *
  * <p>{@code attackType} and {@code threatScore} are stored as given and may be null (not enriched).
  *
- * <p>Both reads run in one read-only REPEATABLE READ transaction each, so all their queries see the
- * same snapshot even while new batches are being saved. The samples read is also bounded by
- * {@code SET LOCAL statement_timeout}: a broad filter over many rows is cancelled by PostgreSQL instead
- * of holding a connection, and surfaces as {@link SamplesQueryTimeoutException}.
+ * <p>Every read runs in one read-only READ transaction, so all its queries see the
+ * same snapshot even while new batches are being saved. The samples and timeseries reads are also
+ * bounded by {@code SET LOCAL statement_timeout} (each with its own setting): a broad request over many
+ * rows is cancelled by PostgreSQL instead of holding a connection, and surfaces as
+ * {@link ReadQueryTimeoutException}.
  */
 @Component
 public class EventStore {
@@ -114,6 +118,18 @@ public class EventStore {
             LIMIT 10
             """;
 
+    // Event counts per bucket, using the same WHERE clauses as the stats summary. The bucket width is
+    // the first bind parameter, TimeseriesInterval.seconds(), so no request text reaches the SQL and
+    // Java and PostgreSQL bucket on the same width. The origin is the UTC epoch, so buckets line up with TimeseriesInterval.floor and
+    // the Java zero-fill finds every bucket PostgreSQL returns. Empty buckets are not returned here.
+    private static final String TIMESERIES = """
+            SELECT date_bin(make_interval(secs => ?), timestamp, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS bucket,
+                   count(*) AS event_count
+            FROM events
+            WHERE %s
+            GROUP BY bucket
+            """;
+
     // Samples: the optional filters, each a constant fragment with one bind parameter. Only the
     // fragments for the filters given are joined, so there is no "(? IS NULL OR ...)" either.
     private static final String SAMPLE_COLUMNS = """
@@ -138,13 +154,20 @@ public class EventStore {
     private final TransactionTemplate tx;
     private final TransactionTemplate readTx;
     private final String setSamplesTimeout;
+    private final String setTimeseriesTimeout;
 
     @Autowired
     public EventStore(JdbcTemplate jdbc, TransactionTemplate tx, MiniWsaProperties props) {
-        this(jdbc, tx, props.samples().queryTimeout());
+        this(jdbc, tx, props.samples().queryTimeout(), props.timeseries().queryTimeout());
     }
 
-    EventStore(JdbcTemplate jdbc, TransactionTemplate tx, Duration samplesQueryTimeout) {
+    /** For tests that only care about one timeout: samples and timeseries both get {@code queryTimeout}. */
+    EventStore(JdbcTemplate jdbc, TransactionTemplate tx, Duration queryTimeout) {
+        this(jdbc, tx, queryTimeout, queryTimeout);
+    }
+
+    EventStore(JdbcTemplate jdbc, TransactionTemplate tx, Duration samplesQueryTimeout,
+               Duration timeseriesQueryTimeout) {
         this.jdbc = jdbc;
         this.tx = tx;
         // The reads run in one read-only snapshot, so all their queries see the same events (the
@@ -154,14 +177,17 @@ public class EventStore {
         this.readTx.setReadOnly(true);
         this.readTx.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
         // SET LOCAL cannot take a bind parameter; the value is configuration, checked here.
-        this.setSamplesTimeout = "SET LOCAL statement_timeout = " + timeoutMillis(samplesQueryTimeout);
+        this.setSamplesTimeout = "SET LOCAL statement_timeout = "
+                + timeoutMillis("miniwsa.samples.query-timeout", samplesQueryTimeout);
+        this.setTimeseriesTimeout = "SET LOCAL statement_timeout = "
+                + timeoutMillis("miniwsa.timeseries.query-timeout", timeseriesQueryTimeout);
     }
 
     /** statement_timeout is an int of milliseconds, and 0 would mean "no timeout". */
-    private static long timeoutMillis(Duration timeout) {
+    private static long timeoutMillis(String property, Duration timeout) {
         if (timeout.compareTo(Duration.ofMillis(1)) < 0 || timeout.toMillis() > Integer.MAX_VALUE) {
             throw new IllegalArgumentException(
-                    "miniwsa.samples.query-timeout must be between 1ms and " + Integer.MAX_VALUE + "ms, was " + timeout);
+                    property + " must be between 1ms and " + Integer.MAX_VALUE + "ms, was " + timeout);
         }
         return timeout.toMillis();
     }
@@ -186,11 +212,8 @@ public class EventStore {
      */
     public StatsSummary summarize(Long configId, Instant from, Instant to) {
         // Chosen once: the WHERE clause and its parameters, shared by every query below.
-        boolean allConfigs = configId == null;
-        String where = allConfigs ? WINDOW : WINDOW_AND_CONFIG;
-        Object[] args = allConfigs
-                ? new Object[] {utc(from), utc(to)}
-                : new Object[] {utc(from), utc(to), configId};
+        String where = windowWhere(configId);
+        Object[] args = windowArgs(configId, from, to);
 
         return readTx.execute(status -> {
             Long total = jdbc.queryForObject(TOTAL.formatted(where), Long.class, args);
@@ -223,10 +246,61 @@ public class EventStore {
     }
 
     /**
+     * Counts the events whose {@code timestamp} is in {@code [from, to)} per {@code interval} bucket,
+     * with every bucket of the window present (0 when it has no events), oldest first. Buckets are
+     * aligned to the UTC epoch, so the first one may start before {@code from}; it still only counts
+     * events at or after {@code from}.
+     *
+     * <p>The caller ({@code StatsController}) has already checked the window: {@code from} is before
+     * {@code to} and it needs at most {@link Timeseries#MAX_BUCKETS} buckets.
+     *
+     * @param configId the configuration to count, or {@code null} for all configurations
+     * @throws ReadQueryTimeoutException if PostgreSQL cancelled the query for running too long
+     */
+    public Timeseries timeseries(Long configId, Instant from, Instant to, TimeseriesInterval interval) {
+        String sql = TIMESERIES.formatted(windowWhere(configId));
+        Object[] windowArgs = windowArgs(configId, from, to);
+        Object[] args = new Object[windowArgs.length + 1];
+        args[0] = interval.seconds();
+        System.arraycopy(windowArgs, 0, args, 1, windowArgs.length);
+
+        Map<Instant, Long> counts = new HashMap<>();
+        try {
+            readTx.executeWithoutResult(status -> {
+                jdbc.execute(setTimeseriesTimeout);
+                jdbc.query(sql, rs -> {
+                    counts.put(instant(rs, "bucket"), rs.getLong("event_count"));
+                }, args);
+            });
+        } catch (DataAccessException e) {
+            if (isTimeout(e)) {
+                throw new ReadQueryTimeoutException("Timeseries query cancelled after its timeout", e);
+            }
+            throw e;
+        }
+        return Timeseries.zeroFilled(configId, from, to, interval, counts);
+    }
+
+    /**
+     * The stats WHERE clause: {@code configId} is filtered only when given, rather than with
+     * "(? IS NULL OR config_id = ?)", which can stop the index from being used.
+     */
+    private static String windowWhere(Long configId) {
+        return configId == null ? WINDOW : WINDOW_AND_CONFIG;
+    }
+
+    /** The bind parameters for {@link #windowWhere}, in its order. */
+    private static Object[] windowArgs(Long configId, Instant from, Instant to) {
+        return configId == null
+                ? new Object[] {utc(from), utc(to)}
+                : new Object[] {utc(from), utc(to), configId};
+    }
+
+    /**
      * The page of events matching every non-null filter in {@code q}, newest first (ties by eventId), and
      * the total number of matches.
      *
-     * @throws SamplesQueryTimeoutException if PostgreSQL cancelled the query for running too long
+     * @throws ReadQueryTimeoutException if PostgreSQL cancelled the query for running too long
      */
     public SampleResponse findSamples(SampleQuery q) {
         List<String> conditions = new ArrayList<>();
@@ -271,7 +345,7 @@ public class EventStore {
             });
         } catch (DataAccessException e) {
             if (isTimeout(e)) {
-                throw new SamplesQueryTimeoutException("Samples query cancelled after its timeout", e);
+                throw new ReadQueryTimeoutException("Samples query cancelled after its timeout", e);
             }
             throw e;
         }

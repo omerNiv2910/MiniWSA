@@ -6,8 +6,8 @@ import com.miniwsa.model.SecurityEvent;
 import com.miniwsa.model.Severity;
 import com.miniwsa.samples.SampleQuery;
 import com.miniwsa.samples.SampleResponse;
-import com.miniwsa.samples.SamplesQueryTimeoutException;
 import com.miniwsa.storage.EventStore;
+import com.miniwsa.storage.ReadQueryTimeoutException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -243,7 +243,7 @@ class SamplesControllerTest {
     @Test
     void aTimedOutQueryIsServiceUnavailable() throws Exception {
         when(eventStore.findSamples(any()))
-                .thenThrow(new SamplesQueryTimeoutException("cancelled", new RuntimeException()));
+                .thenThrow(new ReadQueryTimeoutException("cancelled", new RuntimeException()));
 
         mvc.perform(get(URL))
                 .andExpect(status().isServiceUnavailable())

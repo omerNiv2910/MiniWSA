@@ -145,6 +145,56 @@ No extra index is needed: a `(category, timestamp DESC)` index would make a rare
 - **Pages shift while events arrive.** New events go to the front, so paging through live data can show an event twice. Keyset pagination fixes this too.
 - **Events still in the ingest queue are not returned yet**, as with stats.
 
+## Timeseries
+
+`GET /v1/stats/timeseries?configId={configId}&from={ISO8601}&to={ISO8601}&interval={1m|5m|1h}` counts the events per time bucket over `[from, to)`, ready for drawing a line chart.
+
+```bash
+curl "localhost:8080/v1/stats/timeseries?configId=14227&from=2026-05-20T14:00:00Z&to=2026-05-20T14:15:00Z&interval=5m"
+```
+
+```json
+{
+  "configId": 14227,
+  "timeRange": { "from": "2026-05-20T14:00:00Z", "to": "2026-05-20T14:15:00Z" },
+  "interval": "5m",
+  "totalEvents": 22,
+  "buckets": [
+    { "start": "2026-05-20T14:00:00Z", "count": 12 },
+    { "start": "2026-05-20T14:05:00Z", "count": 0 },
+    { "start": "2026-05-20T14:10:00Z", "count": 10 }
+  ]
+}
+```
+
+- `from`, `to` and `interval` are required. `from`/`to` follow the same rules as the stats summary (ISO-8601 with an offset; send `+` as `%2B`). `interval` must be exactly `1m`, `5m` or `1h`.
+- `configId` is optional. Without it every configuration is counted and `configId` is left out of the response.
+- Each bucket's `start` is when it begins; it covers `[start, start + interval)`. Buckets line up on whole UTC minutes, 5-minute marks or hours, so when `from` is not on a boundary the first bucket starts before it (but only counts events from `from` on).
+- Every bucket is returned, with `count: 0` when empty, so the line has no gaps. An unknown `configId` gives `200` with all zeros.
+- `totalEvents` is the sum of the buckets and matches `/v1/stats/summary` for the same window.
+- One request returns at most 2,880 buckets: 2 days at `1m`, 10 days at `5m`, 120 days at `1h`. A longer range is rejected with `400`; use a larger interval or a shorter range.
+- Bad parameters return `400` problem+json with `errors: [{field, message}]`, all listed together, as in the summary:
+
+```json
+{ "status": 400, "detail": "Invalid query parameters",
+  "errors": [ { "field": "interval", "message": "must be one of [1m, 5m, 1h]" } ] }
+```
+
+- A query that runs past `miniwsa.timeseries.query-timeout` (default `5s`) is cancelled and returns `503`.
+
+**Performance:** PostgreSQL does the counting (`date_bin` + `GROUP BY`), so at most 2,880 small rows come back; empty buckets are filled in Java. Measured with `EXPLAIN ANALYZE` on 1,000,000 events (20 configurations, 30 days), using the existing indexes:
+
+| Query | Matching events | Time |
+|---|---|---|
+| `configId` + 1 day at `1m` | 1,655 | 8 ms |
+| `configId` + 10 days at `5m` | 16,458 | 47 ms |
+| All configurations + 2 days at `1m` | 66,392 | 92 ms |
+| All configurations + 30 days at `1h` | 1,000,000 | 314 ms |
+
+The cost grows with the number of events in the window, not with the number of buckets, so no new index is needed. At much larger volumes the scale-out path is a per-minute rollup table, as for the summary.
+
+`scripts/timeseries-curl-tests.sh` sends a few test events and runs 17 example requests (successes and errors) against a running app.
+
 ## Package layout
 
 | Package | Responsibility |
@@ -155,9 +205,9 @@ No extra index is needed: a `(category, timestamp DESC)` index would make a rare
 | `queue` | Bounded in-memory event queue |
 | `consumer` | Worker that takes batches off the queue and stores them |
 | `enrichment` | Classification and threat scoring |
-| `storage` | PostgreSQL event writes, stats and samples queries |
-| `stats` | Stats response types |
-| `samples` | Samples query, response and timeout types |
+| `storage` | PostgreSQL event writes, stats, timeseries and samples queries, and the shared read-query timeout |
+| `stats` | Stats summary and timeseries response types, and the timeseries intervals |
+| `samples` | Samples query and response types |
 | `generator` | Synthetic data generator |
 | `config` | Application properties and shared beans |
 

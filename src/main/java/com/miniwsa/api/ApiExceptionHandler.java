@@ -1,7 +1,7 @@
 package com.miniwsa.api;
 
 import com.miniwsa.ingest.EventPublishException;
-import com.miniwsa.samples.SamplesQueryTimeoutException;
+import com.miniwsa.storage.ReadQueryTimeoutException;
 import org.springframework.beans.TypeMismatchException;
 import org.springframework.context.MessageSourceResolvable;
 import org.springframework.core.MethodParameter;
@@ -169,12 +169,12 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * A samples query ran past {@code miniwsa.samples.query-timeout} and PostgreSQL cancelled it. The
-     * same request would time out again, so there is no Retry-After: the client should narrow it.
+     * A read query (samples or timeseries) ran past its configured timeout and PostgreSQL cancelled it.
+     * The same request would time out again, so there is no Retry-After: the client should narrow it.
      */
-    @ExceptionHandler(SamplesQueryTimeoutException.class)
-    ResponseEntity<ProblemDetail> handleSamplesQueryTimeout(SamplesQueryTimeoutException ex) {
-        logger.warn("Samples query timed out: " + ex.getMessage());
+    @ExceptionHandler(ReadQueryTimeoutException.class)
+    ResponseEntity<ProblemDetail> handleReadQueryTimeout(ReadQueryTimeoutException ex) {
+        logger.warn("Read query timed out: " + ex.getMessage());
         ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
                 "Query took too long; narrow the filters or the time range");
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(body);
