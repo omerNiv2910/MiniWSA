@@ -9,7 +9,7 @@ import java.time.Duration;
  * Application settings bound from the {@code miniwsa.*} namespace.
  */
 @ConfigurationProperties(prefix = "miniwsa")
-public record MiniWsaProperties(Queue queue, @DefaultValue Samples samples) {
+public record MiniWsaProperties(Queue queue, @DefaultValue Samples samples, @DefaultValue Timeseries timeseries) {
 
     /**
      * @param capacity             most events held in memory; ingest answers 503 when a request doesn't fit
@@ -29,5 +29,13 @@ public record MiniWsaProperties(Queue queue, @DefaultValue Samples samples) {
      *                     {@code miniwsa.samples} block is left out.
      */
     public record Samples(@DefaultValue("5s") Duration queryTimeout) {
+    }
+
+    /**
+     * @param queryTimeout longest one timeseries request (one bucketed count) may run in PostgreSQL
+     *                     before it is cancelled; at least 1ms. Defaults to 5s, also when the whole
+     *                     {@code miniwsa.timeseries} block is left out.
+     */
+    public record Timeseries(@DefaultValue("5s") Duration queryTimeout) {
     }
 }

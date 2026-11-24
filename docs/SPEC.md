@@ -151,6 +151,67 @@ slower insert for queries already far under the timeout.
 Realistic random events, attack waves (same IP + same path bursts), configurable count
 (e.g. 10,000), output feedable to the ingest API.
 
+## 6. Timeseries (bonus) - `GET /v1/stats/timeseries?configId&from&to&interval`
+
+Event counts per time bucket (`1m`, `5m` or `1h`) over `[from, to)`, for drawing a line chart.
+
+*(Done.)*
+
+**DECISION — parameters.** Same rules and error format as the stats summary (§3): a `400`
+problem+json with `detail: "Invalid query parameters"` and `errors: [{field, message}]`.
+- `from`, `to` and `interval` are required. A missing one is rejected by Spring before any other check,
+  so only the first missing one is reported (`from`, then `to`, then `interval`) as `is required`.
+- `configId` and `from`/`to` are checked exactly as in §3 (empty `from=`/`to=` → `is required`;
+  ISO-8601 with an offset only, converted to UTC; `configId` a positive `long`).
+- `interval` must be exactly `1m`, `5m` or `1h`, case-sensitive, so `1M` cannot be read as a month.
+  Anything else, including an empty `interval=`, → `must be one of [1m, 5m, 1h]`.
+- `from >= to` → field `from`, `must be before to`.
+- Problems are reported together in the order `configId`, `from`, `to`, `interval`, then `from`/`to`.
+- **Bucket limit:** at most 2,880 buckets (2 days at `1m`, 10 days at `5m`, 120 days at `1h`). It is
+  checked only when everything else is valid; more → field `interval`,
+  `too many buckets for this range: at most 2880; use a larger interval or a shorter range`.
+  The count is `ceil((to - floor(from)) / interval)`, so an unaligned `from` can add one bucket.
+- Unknown parameters are ignored.
+
+**DECISION — response.** `{configId?, timeRange{from,to}, interval, totalEvents, buckets[{start,count}]}`.
+- `configId` is left out when absent (all configurations); `timeRange` echoes `from`/`to` in UTC, not
+  rounded to a bucket; `interval` is the label (`"5m"`).
+- Buckets are aligned to the UTC epoch (whole minutes, 5-minute marks, hours), not to `from`, so an event
+  always lands in the same bucket whatever window is asked for. They run in ascending order from
+  `floor(from)` up to, not including, `to`; `buckets[0].start` can be earlier than `from`.
+- Only events with `timestamp` in `[from, to)` are counted, so the first and last buckets can be partial.
+  An event exactly on a bucket boundary is in the later bucket.
+- Every bucket is present: empty ones have `count: 0`, so the chart has no gaps. The list is never empty.
+  No events, or an unknown `configId`, → `200` with all buckets `0`, not `404`.
+- Events are bucketed by event `timestamp`, never `receivedAt`; events still in the ingest queue are not
+  counted yet.
+- `totalEvents` is the sum of the bucket counts, and equals the summary's `totalEvents` for the same window.
+- Counts only; no split by category or action (the brief asks only for counts).
+
+**DECISION — implementation.** `EventStore.timeseries` runs one query,
+`SELECT date_bin(make_interval(secs => ?), timestamp, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS bucket,
+count(*) … GROUP BY bucket`, with the bucket width bound as `TimeseriesInterval.seconds()` (no request text
+in the SQL) and the same WHERE clauses as the summary. Empty buckets are filled in Java
+(`Timeseries.zeroFilled`), using the same epoch alignment (`TimeseriesInterval.floor`), so at most 2,880
+small rows come back. It runs in a read-only `REPEATABLE READ` transaction with
+`SET LOCAL statement_timeout` (`miniwsa.timeseries.query-timeout`, default `5s`); a cancelled query →
+`503` problem+json, as for samples (`ReadQueryTimeoutException`, shared by both).
+
+**DECISION — indexes.** No new index. Measured with `EXPLAIN ANALYZE` on 1,000,000 events (20 configs,
+30 days), inserted in a transaction that was rolled back:
+
+| Query | Matching events | Buckets | Time |
+|---|---|---|---|
+| `configId` + 1 day, `1m` | 1,655 | 1,440 | 8 ms |
+| `configId` + 10 days, `5m` | 16,458 | 2,880 | 47 ms |
+| `configId` + 30 days, `1h` | 50,000 | 720 | 32 ms |
+| all configs + 2 days, `1m` | 66,392 | 2,880 | 92 ms |
+| all configs + 30 days, `1h` | 1,000,000 | 720 | 314 ms (sequential scan) |
+
+The cost grows with the number of matching events, not the number of buckets. At much larger volumes the
+widest all-config windows reach the timeout and return `503`; the scale-out path is the per-minute rollup
+table (commented out in V1), which would make a window read one row per minute instead of every event.
+
 ## Technical
 
 Java + Spring Boot; storage justified for big-data scale (PostgreSQL, with per-minute rollups and time partitioning as the scale-out path, plus Redis);

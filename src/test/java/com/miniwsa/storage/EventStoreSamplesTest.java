@@ -7,7 +7,6 @@ import com.miniwsa.model.SecurityEvent;
 import com.miniwsa.model.Severity;
 import com.miniwsa.samples.SampleQuery;
 import com.miniwsa.samples.SampleResponse;
-import com.miniwsa.samples.SamplesQueryTimeoutException;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -333,7 +332,7 @@ class EventStoreSamplesTest {
             long start = System.nanoTime();
 
             assertThatThrownBy(() -> shortTimeout.findSamples(query(CONFIG, null, null, null, null, 10, 0)))
-                    .isInstanceOf(SamplesQueryTimeoutException.class)
+                    .isInstanceOf(ReadQueryTimeoutException.class)
                     // What PostgreSQL's "canceling statement due to statement timeout" (57014) maps to.
                     .cause().isInstanceOf(QueryTimeoutException.class)
                     .rootCause().isInstanceOf(SQLException.class)
