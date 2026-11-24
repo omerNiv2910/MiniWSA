@@ -33,6 +33,10 @@ miniwsa:
     retry-max-interval: 30s
     # On shutdown, how long the worker gets to store what is still queued.
     shutdown-timeout: 10s
+  samples:
+    # A samples request (count plus one page) is cancelled in PostgreSQL after this long, so a broad
+    # filter cannot hold a connection for long; the API then answers 503. Defaults to 5s if left out.
+    query-timeout: 5s
 
 management:
   endpoints:
