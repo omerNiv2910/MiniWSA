@@ -1,6 +1,6 @@
 package com.miniwsa.config;
 
-import com.miniwsa.api.RateLimitInterceptor;
+import com.miniwsa.ratelimit.RateLimitInterceptor;
 import com.miniwsa.ratelimit.RedisRateLimiter;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Configuration;

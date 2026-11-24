@@ -1,8 +1,8 @@
-package com.miniwsa.api;
+package com.miniwsa.ratelimit;
 
 /**
  * Thrown by {@link RateLimitInterceptor} when a client has used up its read budget for the current window.
- * {@link ApiExceptionHandler} turns it into a 429 Too Many Requests.
+ * {@link com.miniwsa.api.ApiExceptionHandler} turns it into a 429 Too Many Requests.
  */
 public class RateLimitExceededException extends RuntimeException {
 

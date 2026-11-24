@@ -1,6 +1,5 @@
-package com.miniwsa.api;
+package com.miniwsa.ratelimit;
 
-import com.miniwsa.ratelimit.RedisRateLimiter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.servlet.HandlerInterceptor;
@@ -40,7 +39,7 @@ public class RateLimitInterceptor implements HandlerInterceptor {
      * path matches the patterns in {@link com.miniwsa.config.RateLimitWebConfig}, after Tomcat has set the
      * client IP and the controller method has been found, but before parameters are bound/validated and
      * before the controller runs. Returning {@code true} lets the controller run; throwing
-     * {@link RateLimitExceededException} skips it and {@link ApiExceptionHandler} answers 429.
+     * {@link RateLimitExceededException} skips it and {@link com.miniwsa.api.ApiExceptionHandler} answers 429.
      * possible return values:
      * true - carries on. binds the parameters and calls the controller.
      * false - stop at once and call nothing else.
