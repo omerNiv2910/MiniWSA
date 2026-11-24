@@ -11,6 +11,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.validation.ObjectError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.validation.method.ParameterErrors;
 import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -42,6 +43,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     /** Sent with a 503 so clients back off briefly before retrying. */
     private static final String RETRY_AFTER_SECONDS = "5";
+
+    /** Shown for a bad timestamp, in an event body or in a query parameter. */
+    static final String ISO_TIMESTAMP_MESSAGE = "must be an ISO-8601 timestamp, e.g. 2026-05-20T14:32:10Z";
 
     /** Bean validation failures on list elements, e.g. a missing {@code clientIp} in event 3. */
     @Override
@@ -114,6 +118,20 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
+     * A required query parameter is missing, e.g. {@code from} on the stats summary. Spring stops at
+     * the first missing one, so a single {@link QueryParamError} is reported, in the same shape as
+     * the controller's own parameter checks.
+     */
+    @Override
+    protected ResponseEntity<Object> handleMissingServletRequestParameter(
+            MissingServletRequestParameterException ex, HttpHeaders headers, HttpStatusCode status,
+            WebRequest request) {
+        ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Invalid query parameters");
+        body.setProperty("errors", List.of(new QueryParamError(ex.getParameterName(), "is required")));
+        return handleExceptionInternal(ex, body, headers, HttpStatus.BAD_REQUEST, request);
+    }
+
+    /**
      * The event queue had no room for the whole batch, usually because storage is slow or down.
      * Nothing was queued, so the client should retry the whole request. Returned as 503 because it
      * is a temporary problem on our side, not something wrong with the request.
@@ -162,7 +180,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 return "must be one of [" + allowed + "]";
             }
             if (target == Instant.class) {
-                return "must be an ISO-8601 timestamp, e.g. 2026-05-20T14:32:10Z";
+                return ISO_TIMESTAMP_MESSAGE;
             }
         }
         return e.getOriginalMessage();

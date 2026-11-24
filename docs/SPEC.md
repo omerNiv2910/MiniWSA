@@ -59,6 +59,42 @@ batch is stamped again with the retry time. Ingest only validates and queues.
 
 **DECISION:** `from`/`to` are required; `from` inclusive, `to` exclusive; `from >= to` is 400.
 
+*(Done: all fields.)*
+
+**DECISION — parameters.** Errors are a `400` problem+json with
+`detail: "Invalid query parameters"` and `errors: [{field, message}]`.
+- `from`/`to` are required request parameters: a missing one is rejected by Spring before any other
+  check, so only that one is reported (`from` first) as `is required`. Once both are present, every
+  problem with `configId`, `from` and `to` is collected and reported together, in that order. An empty value (`from=`) → `is required`. They must be ISO-8601 with an offset (`Z` or
+  `+02:00`, sent as `%2B02:00` since a bare `+` in a query string is a space); fractional seconds are
+  allowed; other formats (date only, no offset, epoch numbers) → the ingest timestamp message.
+  Offsets are converted to UTC. `from >= to` → field `from`, `must be before to`.
+- `configId`: absent means all configurations. When present it must be a positive integer that fits
+  a `long`; anything else, including an empty `configId=`, → `must be a positive integer`.
+- Unknown parameters are ignored.
+
+**DECISION — response.**
+- `configId` is left out of the JSON when absent (all configurations).
+- `timeRange` echoes `from`/`to` as UTC instants (`...Z`).
+- Events are selected by event `timestamp`, never `receivedAt`.
+- `totalEvents` equals the sum of the `byCategory` counts and the sum of the `byAction` counts.
+- `byCategory`/`byAction` contain only keys with events, highest count first (ties by name); an
+  empty window gives `totalEvents: 0` and `{}` for both.
+- `avgThreatScore` averages the events that have a score (unscored events still count in `count`),
+  rounded half up to 1 decimal and always written with one decimal (`75.0`); it is `null` when no
+  event in the group has a score. A score of `0` is a real score. Same rule for categories and attackers.
+- `topAttackers` (`{clientIp, count, avgThreatScore}`) and `topTargetedPaths` (`{path, count}`) hold at
+  most 10 entries, most events first; ties are broken by the IP or path in byte order (`COLLATE "C"`,
+  so `10.0.0.2` comes before `9.0.0.1`). Paths are grouped by their exact text. Without `configId`
+  an IP or path seen in several configurations is one entry. An empty window gives `[]` for both.
+
+**DECISION — implementation.** Computed directly from `events` with five plain SQL queries
+(`count(*)`, `GROUP BY category`, `GROUP BY action`, `GROUP BY client_ip … LIMIT 10`,
+`GROUP BY path … LIMIT 10`) run in one read-only `REPEATABLE READ` transaction, so they all see the
+same events, using the `(config_id, timestamp)` and `(timestamp)` indexes. The per-minute rollup table is not built yet
+(its DDL in V1 is commented out). The request is answered synchronously from PostgreSQL, not through
+the ingest queue, so events still waiting in the queue are not counted yet.
+
 ## 4. Samples - `GET /v1/events/samples`
 
 Filters (all optional): `configId, from, to, category, action`. `limit` default 20, max 100;
@@ -71,7 +107,7 @@ Realistic random events, attack waves (same IP + same path bursts), configurable
 
 ## Technical
 
-Java + Spring Boot; storage justified for big-data scale (PostgreSQL with per-minute rollups, time partitioning as the scale-out path, plus Redis);
+Java + Spring Boot; storage justified for big-data scale (PostgreSQL, with per-minute rollups and time partitioning as the scale-out path, plus Redis);
 unit tests for classification/enrichment; at least one API integration test; README with
 build/run, curl docs, architecture (+diagram), storage justification, improvements, challenges,
 one thing learned. Bonus: docker compose for the full stack; one of alerting / timeseries /

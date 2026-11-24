@@ -1,8 +1,15 @@
 package com.miniwsa.storage;
 
+import com.miniwsa.model.Action;
+import com.miniwsa.model.Category;
 import com.miniwsa.model.SecurityEvent;
+import com.miniwsa.stats.StatsSummary;
+import com.miniwsa.stats.StatsSummary.AttackerStats;
+import com.miniwsa.stats.StatsSummary.CategoryStats;
+import com.miniwsa.stats.StatsSummary.PathStats;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.PreparedStatement;
@@ -11,10 +18,13 @@ import java.sql.Types;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 /**
- * Writes event batches to PostgreSQL.
+ * Writes event batches to PostgreSQL and reads the statistics for a time window ({@link #summarize}).
  *
  * <p>A batch can be handled more than once (the worker retries it after a failure), so saving
  * must be safe to repeat. Every event is inserted with {@code ON CONFLICT (event_id) DO NOTHING},
@@ -36,12 +46,69 @@ public class EventStore {
             ON CONFLICT (event_id) DO NOTHING
             """;
 
+    // Stats for a window: the events whose time is in [from, to), for one configuration or all of
+    // them. The filter is on event time, so the (config_id, timestamp) and (timestamp) indexes apply.
+    // Each query template below takes one of these two WHERE clauses (%s), chosen once per request,
+    // rather than "(? IS NULL OR config_id = ?)", which can stop the index from being used.
+    private static final String WINDOW = "timestamp >= ? AND timestamp < ?";
+    private static final String WINDOW_AND_CONFIG = WINDOW + " AND config_id = ?";
+
+    private static final String TOTAL = """
+            SELECT count(*)
+            FROM events
+            WHERE %s
+            """;
+
+    // avg() skips events without a threat score and is null when none has one; round() rounds the
+    // (always non-negative) mean half up to 1 decimal. Highest count first, ties by name.
+    private static final String BY_CATEGORY = """
+            SELECT category, count(*) AS event_count, round(avg(threat_score), 1) AS avg_threat_score
+            FROM events
+            WHERE %s
+            GROUP BY category
+            ORDER BY event_count DESC, category
+            """;
+
+    private static final String BY_ACTION = """
+            SELECT action, count(*) AS event_count
+            FROM events
+            WHERE %s
+            GROUP BY action
+            ORDER BY event_count DESC, action
+            """;
+
+    // The 10 client IPs and the 10 paths with the most events. Ties are broken by the value in byte
+    // order (COLLATE "C"), so the result does not depend on the database's locale.
+    private static final String TOP_ATTACKERS = """
+            SELECT client_ip, count(*) AS event_count, round(avg(threat_score), 1) AS avg_threat_score
+            FROM events
+            WHERE %s
+            GROUP BY client_ip
+            ORDER BY event_count DESC, client_ip COLLATE "C"
+            LIMIT 10
+            """;
+
+    private static final String TOP_PATHS = """
+            SELECT path, count(*) AS event_count
+            FROM events
+            WHERE %s
+            GROUP BY path
+            ORDER BY event_count DESC, path COLLATE "C"
+            LIMIT 10
+            """;
+
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
+    private final TransactionTemplate readTx;
 
     public EventStore(JdbcTemplate jdbc, TransactionTemplate tx) {
         this.jdbc = jdbc;
         this.tx = tx;
+        // The stats queries run in one read-only snapshot, so they all see the same events (the
+        // total always equals the category and action sums) even while new batches are being saved.
+        this.readTx = new TransactionTemplate(Objects.requireNonNull(tx.getTransactionManager()));
+        this.readTx.setReadOnly(true);
+        this.readTx.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
     }
 
     public void saveBatch(List<SecurityEvent> events) {
@@ -50,6 +117,54 @@ public class EventStore {
         }
         tx.executeWithoutResult(status ->
                 jdbc.batchUpdate(INSERT_EVENT, events, events.size(), EventStore::bindEvent));
+    }
+
+    /**
+     * Counts the events whose {@code timestamp} is in {@code [from, to)}: in total, per category
+     * (with the average threat score), per action, and for the 10 client IPs (with the average
+     * threat score) and 10 paths with the most events.
+     *
+     * <p>The caller ({@code StatsController}) has already checked the window: {@code from} and
+     * {@code to} are not null and {@code from} is before {@code to}.
+     *
+     * @param configId the configuration to count, or {@code null} for all configurations
+     */
+    public StatsSummary summarize(Long configId, Instant from, Instant to) {
+        // Chosen once: the WHERE clause and its parameters, shared by every query below.
+        boolean allConfigs = configId == null;
+        String where = allConfigs ? WINDOW : WINDOW_AND_CONFIG;
+        Object[] args = allConfigs
+                ? new Object[] {utc(from), utc(to)}
+                : new Object[] {utc(from), utc(to), configId};
+
+        return readTx.execute(status -> {
+            Long total = jdbc.queryForObject(TOTAL.formatted(where), Long.class, args);
+
+            // LinkedHashMap keeps the order of the rows: highest count first.
+            // Return Grouping by Categories
+            Map<Category, CategoryStats> byCategory = new LinkedHashMap<>();
+            jdbc.query(BY_CATEGORY.formatted(where), rs -> {
+                byCategory.put(Category.valueOf(rs.getString("category")),
+                        new CategoryStats(rs.getLong("event_count"), rs.getBigDecimal("avg_threat_score")));
+            }, args);
+
+            // Return Grouping by Actions
+            Map<Action, Long> byAction = new LinkedHashMap<>();
+            jdbc.query(BY_ACTION.formatted(where), rs -> {
+                byAction.put(Action.valueOf(rs.getString("action")), rs.getLong("event_count"));
+            }, args);
+
+            // Top 10 client IPs and paths, most events first
+            List<AttackerStats> topAttackers = jdbc.query(TOP_ATTACKERS.formatted(where),
+                    (rs, row) -> new AttackerStats(rs.getString("client_ip"), rs.getLong("event_count"),
+                            rs.getBigDecimal("avg_threat_score")),
+                    args);
+            List<PathStats> topTargetedPaths = jdbc.query(TOP_PATHS.formatted(where),
+                    (rs, row) -> new PathStats(rs.getString("path"), rs.getLong("event_count")),
+                    args);
+
+            return new StatsSummary(configId, from, to, total, byCategory, byAction, topAttackers, topTargetedPaths);
+        });
     }
 
     private static void bindEvent(PreparedStatement ps, SecurityEvent e) throws SQLException {
