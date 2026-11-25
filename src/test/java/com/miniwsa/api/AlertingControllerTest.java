@@ -2,7 +2,7 @@ package com.miniwsa.api;
 
 import com.miniwsa.alerts.AlertDefinition;
 import com.miniwsa.model.Category;
-import com.miniwsa.storage.AlertStore;
+import com.miniwsa.alerts.AlertService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -32,7 +32,7 @@ class AlertingControllerTest {
     private MockMvc mvc;
 
     @MockitoBean
-    private AlertStore alertStore;
+    private AlertService alertService;
 
     // ---- success ----
 
@@ -50,7 +50,7 @@ class AlertingControllerTest {
                           {"id": 7, "name": "SQLi burst", "category": "INJECTION", "events": 100, "windowMinutes": 5}}
                         """, JsonCompareMode.STRICT));
 
-        verify(alertStore).define(new AlertDefinition(null, "SQLi burst", Category.INJECTION, 100, 5));
+        verify(alertService).define(new AlertDefinition(null, "SQLi burst", Category.INJECTION, 100, 5));
     }
 
     @Test
@@ -60,8 +60,8 @@ class AlertingControllerTest {
         define(body("\"BOT\"", "0", "1")).andExpect(status().isCreated());
         define(body("\"BOT\"", "0", "1440")).andExpect(status().isCreated());
 
-        verify(alertStore).define(new AlertDefinition(null, "rule", Category.BOT, 0, 1));
-        verify(alertStore).define(new AlertDefinition(null, "rule", Category.BOT, 0, 1440));
+        verify(alertService).define(new AlertDefinition(null, "rule", Category.BOT, 0, 1));
+        verify(alertService).define(new AlertDefinition(null, "rule", Category.BOT, 0, 1440));
     }
 
     @Test
@@ -74,7 +74,7 @@ class AlertingControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.alert.id").value(7));
 
-        verify(alertStore).define(new AlertDefinition(null, "rule", Category.XSS, 3, 10));
+        verify(alertService).define(new AlertDefinition(null, "rule", Category.XSS, 3, 10));
     }
 
     // ---- field validation ----
@@ -92,7 +92,7 @@ class AlertingControllerTest {
                           {"field": "windowMinutes", "message": "is required"}
                         ]}
                         """));
-        verifyNoInteractions(alertStore);
+        verifyNoInteractions(alertService);
     }
 
     @Test
@@ -107,7 +107,7 @@ class AlertingControllerTest {
                 .andExpect(jsonPath("$.errors[1].message").value("must be 0 or more"))
                 .andExpect(jsonPath("$.errors[2].field").value("windowMinutes"))
                 .andExpect(jsonPath("$.errors[2].message").value("must be between 1 and 1440"));
-        verifyNoInteractions(alertStore);
+        verifyNoInteractions(alertService);
     }
 
     @Test
@@ -176,7 +176,7 @@ class AlertingControllerTest {
         define("{\"name\": ")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.detail").value("Request body is not valid JSON"));
-        verifyNoInteractions(alertStore);
+        verifyNoInteractions(alertService);
     }
 
     @Test
@@ -184,14 +184,14 @@ class AlertingControllerTest {
         define("")
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON));
-        verifyNoInteractions(alertStore);
+        verifyNoInteractions(alertService);
     }
 
     @Test
     void rejectsANonJsonContentType() throws Exception {
         mvc.perform(post(URL).contentType(MediaType.TEXT_PLAIN).content("x"))
                 .andExpect(status().isUnsupportedMediaType());
-        verifyNoInteractions(alertStore);
+        verifyNoInteractions(alertService);
     }
 
     // ---- helpers ----
@@ -215,11 +215,11 @@ class AlertingControllerTest {
                         {"status": 400, "detail": "Invalid alert definition",
                          "errors": [{"field": "%s", "message": "%s"}]}
                         """.formatted(field, message)));
-        verifyNoInteractions(alertStore);
+        verifyNoInteractions(alertService);
     }
 
     /** The store hands back what it was given, with id 7. */
     private void stubStore() {
-        when(alertStore.define(any())).thenAnswer(inv -> inv.<AlertDefinition>getArgument(0).withId(7));
+        when(alertService.define(any())).thenAnswer(inv -> inv.<AlertDefinition>getArgument(0).withId(7));
     }
 }
