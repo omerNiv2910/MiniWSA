@@ -17,8 +17,9 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       # Fail fast when Redis is down: the batch is then retried with backoff. The 60s default would
-      # block each attempt (and the shutdown drain) for a minute.
-      timeout: 1s
+      # block each attempt (and the shutdown drain) for a minute. 10s leaves room for a full batch
+      # (10,000 events = 20,000+ pipelined commands), which can take over 1s on Docker for Windows.
+      timeout: 10s
       connect-timeout: 1s
 
 miniwsa:
