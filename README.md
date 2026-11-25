@@ -13,11 +13,18 @@ Mini Security Analytics Pipeline: a Spring Boot service that ingests security ev
 
 You don't need Maven: the repository includes the Maven wrapper (`mvnw`), which downloads the right Maven version on first use. The first build also downloads the dependencies, so it takes a few minutes.
 
-**On Windows**, run the commands below in **Git Bash** (installed with Git for Windows), so they work exactly as written. In PowerShell, `./mvnw` must be `.\mvnw.cmd` and `curl` must be `curl.exe`.
+The steps below work in **Bash** (Linux, macOS, or Git Bash on Windows) and in **Windows PowerShell**. Where the command differs, each shell gets its own; otherwise one command is shown for both. In PowerShell, `./mvnw` becomes `.\mvnw.cmd` and `curl` becomes `curl.exe`; PowerShell's own `curl` is a different command and fails with `The URI prefix is not recognized`.
+
+You need **two terminal windows** (Bash or PowerShell). The service runs in the foreground and holds its window until you stop it, so:
+- **First window:** steps 1 to 4. Step 4 starts the service; leave this window open.
+- **Second window:** steps 5 to 7, once the service has started (its log shows `Started MiniWsaApplication`).
+- Step 8 uses both: stop the service in the first window, then stop Docker in either.
 
 ### Steps
 
 **1. Clone the repository and go into it:**
+
+###### Bash and PowerShell
 
 ```bash
 git clone https://github.com/omerNiv2910/MiniWSA.git
@@ -31,17 +38,29 @@ All the following commands run from this folder.
 
 **2. Start PostgreSQL and Redis:**
 
+###### Bash and PowerShell
+
 ```bash
 docker compose up -d
 ```
 
 **3. Build the project:**
 
+###### Bash
+
 ```bash
 ./mvnw package -DskipTests
 ```
 
+###### PowerShell
+
+```powershell
+.\mvnw.cmd package -DskipTests
+```
+
 **4. Start the service:**
+
+###### Bash and PowerShell
 
 ```bash
 java -jar target/miniwsa-0.0.1-SNAPSHOT.jar
@@ -49,15 +68,17 @@ java -jar target/miniwsa-0.0.1-SNAPSHOT.jar
 
 It listens on port 8080 and keeps running in this window, so leave it open. The database schema is created automatically on startup.
 
-**Now open a second window** (another PowerShell or Git Bash), and go to the project folder in it with `cd` (in PowerShell, `cd C:\path\to\MiniWSA`). Run all the next steps in this second window, while the service keeps running in the first one.
+**Now open a second window** (another Bash or PowerShell) once the log shows `Started MiniWsaApplication`, and go to the project folder in it with `cd` (for example `cd C:\path\to\MiniWSA` in PowerShell). Run steps 5 to 7 in this second window, while the service keeps running in the first one.
 
 **5. Check it's up** (in the second window):
+
+###### Bash
 
 ```bash
 curl localhost:8080/actuator/health
 ```
 
-In PowerShell:
+###### PowerShell
 
 ```powershell
 curl.exe localhost:8080/actuator/health
@@ -65,29 +86,35 @@ curl.exe localhost:8080/actuator/health
 
 The answer includes `"status":"UP"`.
 
-**6. Generate test data and send it in.** The repository has no data file, so first create one with the data generator. It runs from the jar built in step 3, so there is nothing else to set up. It writes random events from the last 7 days to `data/events.json`, and 20% of them are one attack wave: a burst from one IP hitting one path within 5 seconds. Set `--count` to the number of events you want, from 1 to 20,000 (here 5,000):
+**6. Generate test data and send it in** (second window). The repository has no data file, so first create one with the data generator. It runs from the jar built in step 3, so there is nothing else to set up. It writes random events from the last 7 days to `data/events.json`, and 20% of them are one attack wave: a burst from one IP hitting one path within 5 seconds. Set `--count` to the number of events you want, from 1 to 20,000 (here 5,000):
+
+###### Bash and PowerShell
 
 ```bash
 java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher --count 5000
 ```
 
-It prints `wrote 5000 events to data/events.json`. Leave out `--count` to get the default of 1,000. Keep the quotes around `"-Dloader.main=..."`, or PowerShell splits the argument and Java fails with `Could not find or load main class`.
+Then send the file to the service:
 
-Right after it, send the file to the service:
+###### Bash
 
 ```bash
 curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data-binary @data/events.json
 ```
 
-In PowerShell, use `curl.exe` and keep the quotes around `"@data/events.json"`. Without them PowerShell reads `@data` as one of its own variables, sends the wrong body, and the service answers `400 Request body is not valid JSON`:
+###### PowerShell
 
 ```powershell
 curl.exe -X POST localhost:8080/v1/events/ingest -H "Content-Type: application/json" --data-binary "@data/events.json"
 ```
 
-It answers `201` with `"accepted"` equal to your count (`"accepted": 5000` here). The events are stored in the background within a second or two.
+In PowerShell, keep the quotes around `"-Dloader.main=..."` (without them Java fails with `Could not find or load main class`) and around `"@data/events.json"` (without them PowerShell reads `@data` as one of its own variables and the service answers `400 Request body is not valid JSON`).
 
-**7. Read the results:**
+The generator prints `wrote 5000 events to data/events.json`; leave out `--count` to get the default of 1,000. The service answers `201` with `"accepted"` equal to your count (`"accepted": 5000` here). The events are stored in the background within a second or two.
+
+**7. Read the results** (second window):
+
+###### Bash
 
 ```bash
 curl "localhost:8080/v1/stats/summary?from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z"
@@ -97,7 +124,7 @@ curl "localhost:8080/v1/stats/summary?from=2026-01-01T00:00:00Z&to=2030-01-01T00
 curl localhost:8080/v1/events/samples
 ```
 
-In PowerShell:
+###### PowerShell
 
 ```powershell
 curl.exe "localhost:8080/v1/stats/summary?from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z"
@@ -107,7 +134,13 @@ curl.exe "localhost:8080/v1/stats/summary?from=2026-01-01T00:00:00Z&to=2030-01-0
 curl.exe localhost:8080/v1/events/samples
 ```
 
-**8. Stop everything:** `Ctrl+C` in the first window (where the service runs) stops the service, and `docker compose down -v` stops PostgreSQL and Redis and deletes their data.
+**8. Stop everything:** press `Ctrl+C` in the first window (where the service runs) to stop the service, then stop PostgreSQL and Redis and delete their data:
+
+###### Bash and PowerShell
+
+```bash
+docker compose down -v
+```
 
 Connection settings can be overridden with `DATABASE_URL` (JDBC URL), `DATABASE_USER`, `DATABASE_PASSWORD`, `REDIS_HOST` and `REDIS_PORT`; the defaults match `docker-compose.yml`.
 
