@@ -2,10 +2,96 @@
 
 Mini Security Analytics Pipeline: a Spring Boot service that ingests security events, enriches them (classification and threat score), and serves summary statistics and samples.
 
+## How to build and run
 
+### What you need
 
+- **Git**
+- **Java 21** (JDK). Check with `java -version`.
+- **Docker** with Docker Compose, and Docker running. Docker runs PostgreSQL and Redis for the service, and the tests start their own PostgreSQL in Docker too.
+- Ports **8080** (the service), **5432** (PostgreSQL) and **6379** (Redis) free on your machine.
 
+You don't need Maven: the repository includes the Maven wrapper (`mvnw`), which downloads the right Maven version on first use. The first build also downloads the dependencies, so it takes a few minutes.
 
+**On Windows**, run the commands below in **Git Bash** (installed with Git for Windows), so they work exactly as written. In PowerShell, `./mvnw` must be `.\mvnw.cmd` and `curl` must be `curl.exe`.
+
+### Steps
+
+**1. Clone the repository and go into it:**
+
+```bash
+git clone https://github.com/omerNiv2910/MiniWSA.git
+```
+
+```bash
+cd MiniWSA
+```
+
+All the following commands run from this folder.
+
+**2. Start PostgreSQL and Redis:**
+
+```bash
+docker compose up -d
+```
+
+**3. Build the project and run the tests:**
+
+```bash
+./mvnw verify
+```
+
+This compiles the code, runs the unit and end-to-end tests, and builds `target/miniwsa-0.0.1-SNAPSHOT.jar`. It should end with `BUILD SUCCESS`.
+
+To build without running the tests:
+
+```bash
+./mvnw package -DskipTests
+```
+
+**4. Start the service:**
+
+```bash
+java -jar target/miniwsa-0.0.1-SNAPSHOT.jar
+```
+
+It listens on port 8080 and keeps running in this terminal; open a second terminal (in the same folder) for the next steps. The database schema is created automatically on startup.
+
+**5. Check it's up:**
+
+```bash
+curl localhost:8080/actuator/health
+```
+
+The answer includes `"status":"UP"`.
+
+**6. Generate test data and send it in.** The repository has no data file, so first create one with the [data generator](#data-generator) (1,000 random events from the last 7 days, written to `data/events.json`):
+
+```bash
+java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher
+```
+
+Then send the file to the service:
+
+```bash
+curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data @data/events.json
+```
+
+It answers `201` with `"accepted": 1000`. The events are stored in the background within a second or two.
+
+**7. Read the results:**
+
+```bash
+curl "localhost:8080/v1/stats/summary?from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z"
+```
+
+```bash
+curl localhost:8080/v1/events/samples
+```
+
+**8. Stop everything:** `Ctrl+C` in the service's terminal stops the service, and `docker compose down -v` stops PostgreSQL and Redis and deletes their data.
+
+Connection settings can be overridden with `DATABASE_URL` (JDBC URL), `DATABASE_USER`, `DATABASE_PASSWORD`, `REDIS_HOST` and `REDIS_PORT`; the defaults match `docker-compose.yml`.
 
 ## Data generator
 
@@ -71,27 +157,6 @@ Exit codes: `0` done, `1` the file could not be written, `2` bad option.
 - **Valid input:** every event passes the ingest validation. Server-set fields (`receivedAt`, `attackType`, `threatScore`) are never written.
 - **Time order:** the events are sorted by timestamp, so when it is fed to the API the server sees each IP's earlier events first. At most 20,000 events, a fifth of the server's default queue capacity, so one file fits in one request.
 
-
-## Running locally
-
-Requirements: Java 21 and Docker.
-
-```bash
-docker compose up -d        # PostgreSQL, Redis
-./mvnw spring-boot:run      # starts the service on :8080
-```
-
-Health check: `curl localhost:8080/actuator/health`
-
-Connection settings can be overridden with `DATABASE_URL` (JDBC URL), `DATABASE_USER`, `DATABASE_PASSWORD`, `REDIS_HOST` and `REDIS_PORT`. The schema is created on startup by Flyway, so PostgreSQL must be reachable when the service starts.
-
-## Building and testing
-
-```bash
-./mvnw verify
-```
-
-Docker must be running: storage and Spring context tests start a real PostgreSQL with Testcontainers.
 
 ## Architecture
 
