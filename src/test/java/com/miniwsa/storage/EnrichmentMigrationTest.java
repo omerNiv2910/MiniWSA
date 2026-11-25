@@ -33,7 +33,7 @@ class EnrichmentMigrationTest {
                         '1', 'R', 'HIGH', 'XSS', 'DENY', now())
                 """);
 
-        Flyway.configure().dataSource(dataSource).load().migrate();
+        Flyway.configure().dataSource(dataSource).target("2").load().migrate();
 
         Map<String, Object> row = jdbc.queryForMap("SELECT * FROM events WHERE event_id = 'old-1'");
         assertThat(row).containsEntry("path", "/admin")

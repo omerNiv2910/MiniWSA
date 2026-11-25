@@ -58,7 +58,7 @@ import java.util.Objects;
 @Component
 public class EventStore {
 
-    static final String INSERT_EVENT = """
+    private final String INSERT_EVENT = """
             INSERT INTO events (event_id, timestamp, config_id, policy_id, client_ip, hostname, path,
                                 method, status_code, user_agent, rule_id, rule_name, rule_message,
                                 severity, category, action, geo_country, geo_city,
@@ -71,10 +71,10 @@ public class EventStore {
     // them. The filter is on event time, so the (config_id, timestamp) and (timestamp) indexes apply.
     // Each query template below takes one of these two WHERE clauses (%s), chosen once per request,
     // rather than "(? IS NULL OR config_id = ?)", which can stop the index from being used.
-    private static final String WINDOW = "timestamp >= ? AND timestamp < ?";
-    private static final String WINDOW_AND_CONFIG = WINDOW + " AND config_id = ?";
+    private final String WINDOW = "timestamp >= ? AND timestamp < ?";
+    private final String WINDOW_AND_CONFIG = WINDOW + " AND config_id = ?";
 
-    private static final String TOTAL = """
+    private final String TOTAL = """
             SELECT count(*)
             FROM events
             WHERE %s
@@ -82,7 +82,7 @@ public class EventStore {
 
     // avg() skips events without a threat score and is null when none has one; round() rounds the
     // (always non-negative) mean half up to 1 decimal. Highest count first, ties by name.
-    private static final String BY_CATEGORY = """
+    private final String BY_CATEGORY = """
             SELECT category, count(*) AS event_count, round(avg(threat_score), 1) AS avg_threat_score
             FROM events
             WHERE %s
@@ -90,7 +90,7 @@ public class EventStore {
             ORDER BY event_count DESC, category
             """;
 
-    private static final String BY_ACTION = """
+    private final String BY_ACTION = """
             SELECT action, count(*) AS event_count
             FROM events
             WHERE %s
@@ -100,7 +100,7 @@ public class EventStore {
 
     // The 10 client IPs and the 10 paths with the most events. Ties are broken by the value in byte
     // order (COLLATE "C"), so the result does not depend on the database's locale.
-    private static final String TOP_ATTACKERS = """
+    private final String TOP_ATTACKERS = """
             SELECT client_ip, count(*) AS event_count, round(avg(threat_score), 1) AS avg_threat_score
             FROM events
             WHERE %s
@@ -109,7 +109,7 @@ public class EventStore {
             LIMIT 10
             """;
 
-    private static final String TOP_PATHS = """
+    private final String TOP_PATHS = """
             SELECT path, count(*) AS event_count
             FROM events
             WHERE %s
@@ -122,7 +122,7 @@ public class EventStore {
     // the first bind parameter, TimeseriesInterval.seconds(), so no request text reaches the SQL and
     // Java and PostgreSQL bucket on the same width. The origin is the UTC epoch, so buckets line up with TimeseriesInterval.floor and
     // the Java zero-fill finds every bucket PostgreSQL returns. Empty buckets are not returned here.
-    private static final String TIMESERIES = """
+    private final String TIMESERIES = """
             SELECT date_bin(make_interval(secs => ?), timestamp, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS bucket,
                    count(*) AS event_count
             FROM events
@@ -132,15 +132,15 @@ public class EventStore {
 
     // Samples: the optional filters, each a constant fragment with one bind parameter. Only the
     // fragments for the filters given are joined, so there is no "(? IS NULL OR ...)" either.
-    private static final String SAMPLE_COLUMNS = """
+    private final String SAMPLE_COLUMNS = """
             event_id, timestamp, config_id, policy_id, client_ip, hostname, path, method, status_code,
             user_agent, rule_id, rule_name, rule_message, severity, category, action, geo_country, geo_city,
             request_size, response_size, received_at, attack_type, threat_score""";
 
-    private static final String SAMPLE_COUNT = "SELECT count(*) FROM events%s";
+    private final String SAMPLE_COUNT = "SELECT count(*) FROM events%s";
 
     // Newest first; event_id breaks ties so pages are stable and never overlap.
-    private static final String SAMPLE_PAGE = "SELECT " + SAMPLE_COLUMNS + """
+    private final String SAMPLE_PAGE = "SELECT " + SAMPLE_COLUMNS + """
 
             FROM events%s
             ORDER BY timestamp DESC, event_id ASC
@@ -148,7 +148,7 @@ public class EventStore {
             """;
 
     /** PostgreSQL's SQLSTATE for a statement cancelled by statement_timeout (or a cancel request). */
-    static final String QUERY_CANCELED = "57014";
+    private final String QUERY_CANCELED = "57014";
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -184,7 +184,7 @@ public class EventStore {
     }
 
     /** statement_timeout is an int of milliseconds, and 0 would mean "no timeout". */
-    private static long timeoutMillis(String property, Duration timeout) {
+    private long timeoutMillis(String property, Duration timeout) {
         if (timeout.compareTo(Duration.ofMillis(1)) < 0 || timeout.toMillis() > Integer.MAX_VALUE) {
             throw new IllegalArgumentException(
                     property + " must be between 1ms and " + Integer.MAX_VALUE + "ms, was " + timeout);
@@ -197,7 +197,7 @@ public class EventStore {
             return;
         }
         tx.executeWithoutResult(status ->
-                jdbc.batchUpdate(INSERT_EVENT, events, events.size(), EventStore::bindEvent));
+                jdbc.batchUpdate(INSERT_EVENT, events, events.size(), this::bindEvent));
     }
 
     /**
@@ -285,12 +285,12 @@ public class EventStore {
      * The stats WHERE clause: {@code configId} is filtered only when given, rather than with
      * "(? IS NULL OR config_id = ?)", which can stop the index from being used.
      */
-    private static String windowWhere(Long configId) {
+    private String windowWhere(Long configId) {
         return configId == null ? WINDOW : WINDOW_AND_CONFIG;
     }
 
     /** The bind parameters for {@link #windowWhere}, in its order. */
-    private static Object[] windowArgs(Long configId, Instant from, Instant to) {
+    private Object[] windowArgs(Long configId, Instant from, Instant to) {
         return configId == null
                 ? new Object[] {utc(from), utc(to)}
                 : new Object[] {utc(from), utc(to), configId};
@@ -355,7 +355,7 @@ public class EventStore {
      * Spring may translate a cancelled statement to {@link QueryTimeoutException} or to a more generic
      * {@link DataAccessException}; the SQLSTATE is the reliable signal.
      */
-    private static boolean isTimeout(DataAccessException e) {
+    private boolean isTimeout(DataAccessException e) {
         if (e instanceof QueryTimeoutException) {
             return true;
         }
@@ -368,7 +368,7 @@ public class EventStore {
     }
 
     /** The reverse of {@link #bindEvent}: nullable columns come back as null, not 0. */
-    private static SecurityEvent mapEvent(ResultSet rs) throws SQLException {
+    private SecurityEvent mapEvent(ResultSet rs) throws SQLException {
         String country = rs.getString("geo_country");
         String city = rs.getString("geo_city");
         SecurityEvent.GeoLocation geo = country == null && city == null
@@ -401,11 +401,11 @@ public class EventStore {
                 rs.getObject("threat_score", Integer.class));
     }
 
-    private static Instant instant(ResultSet rs, String column) throws SQLException {
+    private Instant instant(ResultSet rs, String column) throws SQLException {
         return rs.getObject(column, OffsetDateTime.class).toInstant();
     }
 
-    private static void bindEvent(PreparedStatement ps, SecurityEvent e) throws SQLException {
+    private void bindEvent(PreparedStatement ps, SecurityEvent e) throws SQLException {
         SecurityEvent.Rule rule = e.rule();
         SecurityEvent.GeoLocation geo = e.geoLocation();
         ps.setString(1, e.eventId());
@@ -437,7 +437,7 @@ public class EventStore {
         }
     }
 
-    private static void setNullableLong(PreparedStatement ps, int index, Long value) throws SQLException {
+    private void setNullableLong(PreparedStatement ps, int index, Long value) throws SQLException {
         if (value == null) {
             ps.setNull(index, Types.BIGINT);
         } else {
