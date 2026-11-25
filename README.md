@@ -4,11 +4,21 @@ Mini Security Analytics Pipeline: a Spring Boot service that ingests security ev
 
 ## Architecture
 
-- **Ingestion:** `POST /v1/events/ingest` takes a JSON array of events, or a single event object. It validates the request and puts the whole batch on a bounded in-memory queue, then returns `201` with `{"status": 201, "message": "Events accepted for processing", "accepted": n}` (the events are not echoed back, since they are enriched later). When the queue has no room for the batch, nothing is queued and the response is `503` with `Retry-After`.
-- **Processing:** a background worker in the same application takes batches from the queue, stamps `receivedAt` (the time it takes the batch), classifies and scores them (Redis holds each client IP's recent events for the 10-minute window) and writes them to PostgreSQL. A failed write is retried with backoff until it succeeds. Queued events live only in memory: they are lost if the process dies (a normal shutdown drains the queue first).
-- **Storage:** PostgreSQL, schema managed by Flyway (`src/main/resources/db/migration`). Each batch is one transaction: events are inserted with `ON CONFLICT (event_id) DO NOTHING`, so a retried batch is stored exactly once.
-- **Stats:** `GET /v1/stats/summary` is answered in the request, straight from PostgreSQL (not through the queue), with five `GROUP BY` queries (total, per category, per action, top 10 client IPs, top 10 paths) over the events in the time window, run in one read-only snapshot. Events still waiting in the queue are not counted yet.
-- **Samples:** `GET /v1/events/samples` is also answered in the request, straight from PostgreSQL: a count and one page of matching events, newest first, in one read-only snapshot, cancelled by PostgreSQL if it runs past the query timeout.
+It's one Spring Boot app plus two containers: PostgreSQL (where the events and alerts live) and Redis (counters for calculations and rate limiter). 
+Inside the app there are two paths:
+- **The Ingestion path** is async. Adding events, they go onto an in-memory queue, and a `201` is sent right away. A background worker picks them up, enriches them and saves them.
+- **The read path** is plain request/response that contains most endpoints: Stats, samples and alerts. all go straight to PostgreSQL and answer from there. They never touch the queue.
+In addition, as part from the read path, there is a rate limiter that counts stats and samples requests. if there are too much requests in X time, it will return an exceptions.
+
+A diagram sums it up in a different file.
+
+**How an event travels:**
+
+1. **Ingest.** `POST /v1/events/ingest` takes a JSON array (or a single event), checks it, and drops the whole batch on the queue. You get back `201` with `{"status": 201, "message": "Events accepted for processing", "accepted": n}`. If the queue doesn't have room, nothing is queued and you get `503` with `Retry-After`, so slow down and try again. if a batch (or event) fails, the server do retires with exponential backoff.
+2. **Process.** The worker grabs up to `batch-size` events, stamps `receivedAt`, and works out each event's `attackType` and `threatScore`. Part of the score is how busy that client IP has been in the last 10 minutes, and Redis keeps track of that.
+3. **Store.** The batch goes into PostgreSQL in one transaction with `ON CONFLICT (event_id) DO NOTHING`. If the write fails, the worker just retries the same batch with backoff. Duplicates get skipped, so nothing is saved twice. The schema is managed by Flyway (`src/main/resources/db/migration`).
+4. **Read.** `GET /v1/stats/summary`, `/v1/stats/timeseries` and `/v1/events/samples` run their SQL in one read-only snapshot, so the numbers always add up. Slow queries get cancelled by PostgreSQL and come back as `503`. These three are rate limited per IP via Redis. `/v1/alerts/define` and `/v1/alerts/evaluate` store alert rules and check which ones fire, also straight in SQL.
+
 
 ## Design choice: in-memory event queue
 
@@ -17,7 +27,7 @@ Ingestion and storage are connected by a bounded queue in the application's own 
 **Why**
 
 - **Fast, steady ingest:** the API answers as soon as a batch is queued, so a slow PostgreSQL write doesn't slow down clients.
-- **Efficient writes:** the worker stores events in batches of up to `batch-size`, one transaction each, instead of one insert per request.
+- **Efficient writes:** the worker takes whatever is queued, up to `batch-size` events, and stores it in one transaction (a JDBC batch insert) instead of one insert per request. Under light load a batch can be a single event; a large request can span several batches.
 - **Nothing extra to run:** the service needs only PostgreSQL and Redis. That keeps local setup, tests and deployment simple, which fits a single-instance service of this size.
 
 **Trade-offs and how they are handled**
@@ -30,30 +40,48 @@ Ingestion and storage are connected by a bounded queue in the application's own 
 | A batch can be written more than once after a retry | Storage is idempotent: duplicate `event_id`s are skipped. |
 | Only works within one instance | Each instance has its own queue. Running several instances still works, since they all write to the same PostgreSQL, but no queue is shared between them. |
 
-**When to change it:** if losing queued events on a crash is not acceptable, or ingest needs to scale separately from storage, replace the queue with a durable one (an external message broker, or an outbox table in PostgreSQL). Only `IngestService` and `EventQueueWorker` would change, because the rest of the pipeline works on batches through `EventBatchHandler`.
+**When to change it:** if losing queued events on a crash is not acceptable, or ingest needs to scale separately from storage, replace the queue with a durable one (an external message broker).
 
 **Settings** (`miniwsa.queue.*` in `application.yml`):
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `capacity` | `100000` | Most events held in memory |
-| `batch-size` | `500` | Most events stored in one transaction |
+| `batch-size` | `10000` | Most events stored in one transaction |
 | `poll-timeout` | `500ms` | Longest the worker waits for an event when the queue is empty, before checking for shutdown |
 | `retry-initial-interval` / `retry-max-interval` | `1s` / `30s` | Backoff between retries of a failed batch |
 | `shutdown-timeout` | `10s` | Time the worker gets on shutdown to store what is still queued |
 
-## Design choice: PostgreSQL for storage
+## Design choice: storage (PostgreSQL + Redis)
 
-Enriched events are stored in one PostgreSQL table, `events` (one row per event, nested objects flattened into columns), not in a document store, a search engine or a column store.
+Two stores, each holding the kind of data it's good at:
 
-**Why**
+- **PostgreSQL** holds everything that must last: enriched events in one `events` table (one row per event, nested objects flattened into columns) and alert rules in `alerts`.
+- **Redis** holds only short-lived counters that are fine to lose: each client IP's events from the last 10 minutes (for the threat score) and the per-IP rate-limit counters. Every key expires on its own.
+
+**Alternatives considered**
+
+| Option | Why not (for this service) |
+|---|---|
+| Document store (e.g. MongoDB) | Events all have the same fixed shape, so a flexible schema buys nothing, and every read is a `GROUP BY` count, which SQL does more simply than an aggregation pipeline. |
+| Search engine (e.g. Elasticsearch) | Strong at full-text search and aggregations, but the APIs only filter on exact values. It's heavier to run, and writes become visible only after a refresh, so counts lag. |
+| Columnar store (e.g. ClickHouse) | The best fit for billions of rows of analytics, but no primary-key dedup on insert (merges happen later), no multi-statement transactions, and more to run than this volume needs. It's the planned next step if volume outgrows PostgreSQL (see below). |
+| Redis for events too | Everything would live in memory and need hand-built indexes for every filter and group. Fine for counters, wrong for history. |
+
+**Why PostgreSQL**
 
 - **The data has a fixed shape.** Every event has the same fields, so typed columns with `NOT NULL` and `CHECK` constraints (`threat_score BETWEEN 0 AND 100`) reject bad rows at the database, and Flyway migrations change the schema in versioned, reviewable steps.
-- **Every read is a filter plus a count.** Stats, samples and timeseries are time-range filters with `GROUP BY` (`category`, `action`, top IPs and paths, `date_bin` buckets). SQL does this in the database, so only small result rows come back to Java. The `(config_id, timestamp DESC)` and `(timestamp DESC)` indexes serve both "newest first" pages and time-range scans.
+- **Every read is a filter plus a count.** Stats, samples, timeseries and alert evaluation are time-range filters with `GROUP BY` (`category`, `action`, top IPs and paths, `date_bin` buckets). SQL does this in the database, so only small result rows come back to Java.
 - **Exactly-once storage comes for free.** `event_id` is the primary key and each batch is inserted in one transaction with `ON CONFLICT (event_id) DO NOTHING`, so a batch retried after a failure is stored once. That is what lets the worker retry blindly.
 - **Consistent answers.** Each stats or samples request runs its queries in one read-only snapshot, so the total and the per-category counts always add up, even while the worker is writing.
 - **Protection from expensive queries.** PostgreSQL cancels a samples or timeseries query that runs past its timeout (`miniwsa.samples.query-timeout`, `miniwsa.timeseries.query-timeout`), and the API turns that into `503` instead of tying up a connection.
 - **Simple to run and test.** One `postgres:17` container in Docker Compose, and tests run against a real PostgreSQL with Testcontainers and the production migrations, not an in-memory imitation.
+
+**Why Redis next to it**
+
+- **The counters change on every event and are only needed for minutes.** Writing them to PostgreSQL would add an update per event and a cleanup job. In Redis, a whole batch's IP counts are one pipelined round trip (sorted set per IP, `ZADD` + `ZCOUNT`), and TTLs delete old keys.
+- **Shared by all instances.** Unlike an in-process map, the 10-minute IP window and the rate limit stay correct when the service runs on several instances.
+- **Losing it is harmless.** If Redis is wiped, the IP counts restart from zero and the rate limiter fails open. No event is lost, because events never live only in Redis.
 
 **Trade-offs and how they are handled**
 
@@ -167,7 +195,7 @@ curl "localhost:8080/v1/events/samples?configId=14227&category=INJECTION&action=
 | `configId` + a rare `category` | 46 | 200 ms |
 | `offset=500000` | 1,000,000 | 0.75 s |
 
-No extra index is needed: a `(category, timestamp DESC)` index would make a rare category without `configId` near-instant, but every query is already far under the timeout and the index would cost space and slow every insert.
+These numbers were measured before `V4` added the `(category, timestamp)` index for alert evaluation. Every query was already far under the timeout, so samples did not need it, but a rare category without `configId` can now use it too.
 
 **Known limits:**
 - **Deep pages get slower.** `OFFSET` makes PostgreSQL read and discard every skipped row, so the cost grows with `offset`; the query timeout bounds it. The fix is keyset pagination: the client sends the last `(timestamp, eventId)` it saw and the query continues from there, so every page costs the same.
