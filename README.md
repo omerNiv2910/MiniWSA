@@ -35,15 +35,7 @@ All the following commands run from this folder.
 docker compose up -d
 ```
 
-**3. Build the project and run the tests:**
-
-```bash
-./mvnw verify
-```
-
-This compiles the code, runs the unit and end-to-end tests, and builds `target/miniwsa-0.0.1-SNAPSHOT.jar`. It should end with `BUILD SUCCESS`.
-
-To build without running the tests:
+**3. Build the project:**
 
 ```bash
 ./mvnw package -DskipTests
@@ -55,12 +47,20 @@ To build without running the tests:
 java -jar target/miniwsa-0.0.1-SNAPSHOT.jar
 ```
 
-It listens on port 8080 and keeps running in this terminal; open a second terminal (in the same folder) for the next steps. The database schema is created automatically on startup.
+It listens on port 8080 and keeps running in this window, so leave it open. The database schema is created automatically on startup.
 
-**5. Check it's up:**
+**Now open a second window** (another PowerShell or Git Bash), and go to the project folder in it with `cd` (in PowerShell, `cd C:\path\to\MiniWSA`). Run all the next steps in this second window, while the service keeps running in the first one.
+
+**5. Check it's up** (in the second window):
 
 ```bash
 curl localhost:8080/actuator/health
+```
+
+In PowerShell:
+
+```powershell
+curl.exe localhost:8080/actuator/health
 ```
 
 The answer includes `"status":"UP"`.
@@ -97,7 +97,17 @@ curl "localhost:8080/v1/stats/summary?from=2026-01-01T00:00:00Z&to=2030-01-01T00
 curl localhost:8080/v1/events/samples
 ```
 
-**8. Stop everything:** `Ctrl+C` in the service's terminal stops the service, and `docker compose down -v` stops PostgreSQL and Redis and deletes their data.
+In PowerShell:
+
+```powershell
+curl.exe "localhost:8080/v1/stats/summary?from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z"
+```
+
+```powershell
+curl.exe localhost:8080/v1/events/samples
+```
+
+**8. Stop everything:** `Ctrl+C` in the first window (where the service runs) stops the service, and `docker compose down -v` stops PostgreSQL and Redis and deletes their data.
 
 Connection settings can be overridden with `DATABASE_URL` (JDBC URL), `DATABASE_USER`, `DATABASE_PASSWORD`, `REDIS_HOST` and `REDIS_PORT`; the defaults match `docker-compose.yml`.
 
