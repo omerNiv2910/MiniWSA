@@ -71,10 +71,16 @@ The answer includes `"status":"UP"`.
 java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher
 ```
 
-Then send the file to the service:
+Right after it, send the file to the service:
 
 ```bash
-curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data @data/events.json
+curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data-binary @data/events.json
+```
+
+In PowerShell, use `curl.exe` and keep the quotes around `"@data/events.json"`. Without them PowerShell reads `@data` as one of its own variables, sends the wrong body, and the service answers `400 Request body is not valid JSON`:
+
+```powershell
+curl.exe -X POST localhost:8080/v1/events/ingest -H "Content-Type: application/json" --data-binary "@data/events.json"
 ```
 
 It answers `201` with `"accepted": 1000`. The events are stored in the background within a second or two.
@@ -129,11 +135,19 @@ java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.
 
 From an IDE you can instead run `GeneratorCli.main` directly, with the options as program arguments (e.g. `--count 5000 --output data/my-events.json`) and the project root as the working directory.
 
-**3. Optional: feed the file to the ingestion API** while the app is running:
+**3. Send the file to the ingestion API** right after, while the app is running:
 
 ```bash
-curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data @data/events.json
+curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data-binary @data/events.json
 ```
+
+In PowerShell, use `curl.exe` and keep the quotes around `"@data/events.json"` (without them PowerShell sends the wrong body and the service answers `400 Request body is not valid JSON`):
+
+```powershell
+curl.exe -X POST localhost:8080/v1/events/ingest -H "Content-Type: application/json" --data-binary "@data/events.json"
+```
+
+It answers `201` with `"accepted": 1000`. If you used `--output`, send that file instead, e.g. `--data-binary @data/my-events.json`.
 
 ### Options
 
