@@ -205,7 +205,7 @@ public class EventStore {
      * (with the average threat score), per action, and for the 10 client IPs (with the average
      * threat score) and 10 paths with the most events.
      *
-     * <p>The caller ({@code StatsController}) has already checked the window: {@code from} and
+     * <p>The caller ({@code StatsService}) has already checked the window: {@code from} and
      * {@code to} are not null and {@code from} is before {@code to}.
      *
      * @param configId the configuration to count, or {@code null} for all configurations
@@ -251,7 +251,7 @@ public class EventStore {
      * aligned to the UTC epoch, so the first one may start before {@code from}; it still only counts
      * events at or after {@code from}.
      *
-     * <p>The caller ({@code StatsController}) has already checked the window: {@code from} is before
+     * <p>The caller ({@code StatsService}) has already checked the window: {@code from} is before
      * {@code to} and it needs at most {@link Timeseries#MAX_BUCKETS} buckets.
      *
      * @param configId the configuration to count, or {@code null} for all configurations

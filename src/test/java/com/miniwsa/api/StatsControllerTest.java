@@ -1,5 +1,6 @@
 package com.miniwsa.api;
 
+import com.miniwsa.stats.StatsService;
 import com.miniwsa.model.Action;
 import com.miniwsa.model.Category;
 import com.miniwsa.stats.StatsSummary;
@@ -10,6 +11,7 @@ import com.miniwsa.storage.EventStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.json.JsonCompareMode;
@@ -38,6 +40,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(StatsController.class)
+@Import(StatsService.class)
 class StatsControllerTest {
 
     private static final String URL = "/v1/stats/summary";

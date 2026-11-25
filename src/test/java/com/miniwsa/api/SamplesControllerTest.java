@@ -6,11 +6,13 @@ import com.miniwsa.model.SecurityEvent;
 import com.miniwsa.model.Severity;
 import com.miniwsa.samples.SampleQuery;
 import com.miniwsa.samples.SampleResponse;
+import com.miniwsa.samples.SamplesService;
 import com.miniwsa.storage.EventStore;
 import com.miniwsa.storage.ReadQueryTimeoutException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.json.JsonCompareMode;
@@ -35,6 +37,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(SamplesController.class)
+@Import(SamplesService.class)
 class SamplesControllerTest {
 
     private static final String URL = "/v1/events/samples";
