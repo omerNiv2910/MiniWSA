@@ -26,7 +26,7 @@ miniwsa:
     # Events held in memory between ingest and storage. They are lost if the process dies;
     # ingest answers 503 when a request doesn't fit.
     capacity: 100000
-    batch-size: 500
+    batch-size: 10000
     poll-timeout: 500ms
     # A failed batch (PostgreSQL down) is retried with doubling waits, up to the max, until it succeeds.
     retry-initial-interval: 1s

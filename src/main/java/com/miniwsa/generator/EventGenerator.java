@@ -30,8 +30,11 @@ import java.util.UUID;
  */
 final class EventGenerator {
 
-    /** Most events in one run; equal to the server's default queue capacity, so one file fits in one request. */
-    static final int MAX_COUNT = 100000;
+    /**
+     * Most events in one run: a fifth of the server's default queue capacity, so one file fits in one
+     * request even while the worker is still storing earlier events.
+     */
+    static final int MAX_COUNT = 20000;
 
     /** The events cover this long, ending at {@code end}. */
     static final Duration SPAN = Duration.ofDays(7);
