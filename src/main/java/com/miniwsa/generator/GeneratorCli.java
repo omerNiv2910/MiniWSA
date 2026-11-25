@@ -38,7 +38,7 @@ public final class GeneratorCli {
             Generates random security events over the last 7 days, including attack waves (bursts of events
             from the same IP hitting the same path), as a JSON array for POST /v1/events/ingest.
 
-              --count <n>       number of events, 1 to 100000 (default 1000)
+              --count <n>       number of events, 1 to 20000 (default 1000)
               --output <file>   file to write the events to; missing folders are created
                                 (default data/events.json)
               --help            show this text
