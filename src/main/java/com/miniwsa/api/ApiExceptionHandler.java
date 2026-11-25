@@ -57,7 +57,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     /** Sent with a 503 so clients back off briefly before retrying. */
     private static final String RETRY_AFTER_SECONDS = "5";
 
-    static final String INVALID_ALERT_DETAIL = "Invalid alert definition";
+    private static final String INVALID_ALERT_DETAIL = "Invalid alert definition";
 
     /** Alert body errors are listed in the order the fields appear in {@link AlertDefinition}. */
     private static final List<String> ALERT_FIELD_ORDER = Arrays.stream(AlertDefinition.class.getRecordComponents())
@@ -65,7 +65,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             .toList();
 
     /** Shown for a bad timestamp, in an event body or in a query parameter. */
-    static final String ISO_TIMESTAMP_MESSAGE = "must be an ISO-8601 timestamp, e.g. 2026-05-20T14:32:10Z";
+    public static final String ISO_TIMESTAMP_MESSAGE = "must be an ISO-8601 timestamp, e.g. 2026-05-20T14:32:10Z";
 
     /**
      * Bean validation failures. On query parameters (e.g. {@code limit=101} on samples) they are reported

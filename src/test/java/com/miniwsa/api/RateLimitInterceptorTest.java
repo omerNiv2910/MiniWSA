@@ -1,11 +1,14 @@
 package com.miniwsa.api;
 
+import com.miniwsa.samples.SamplesService;
+import com.miniwsa.stats.StatsService;
 import com.miniwsa.ingest.IngestService;
 import com.miniwsa.ratelimit.RedisRateLimiter;
 import com.miniwsa.storage.EventStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -30,6 +33,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * what makes the config register it, so the other controller slice tests (no limiter bean) run without it.
  */
 @WebMvcTest({StatsController.class, SamplesController.class, IngestController.class})
+@Import({StatsService.class, SamplesService.class})
 class RateLimitInterceptorTest {
 
     private static final String CLIENT = "198.51.100.7";

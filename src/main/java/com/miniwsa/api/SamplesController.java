@@ -2,9 +2,8 @@ package com.miniwsa.api;
 
 import com.miniwsa.model.Action;
 import com.miniwsa.model.Category;
-import com.miniwsa.samples.SampleQuery;
 import com.miniwsa.samples.SampleResponse;
-import com.miniwsa.storage.EventStore;
+import com.miniwsa.samples.SamplesService;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Positive;
@@ -14,9 +13,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.util.List;
 
 /**
  * {@code GET /v1/events/samples?configId=&from=&to=&category=&action=&limit=&offset=}: the individual
@@ -29,7 +26,8 @@ import java.util.List;
  *       reported by {@link ApiExceptionHandler}. Spring stops at the first such parameter.</li>
  *   <li>Out-of-range values ({@code configId=0}, {@code limit=101}, {@code offset=-1}) are reported
  *       together.</li>
- *   <li>{@code from} must be before {@code to}, checked here since it involves two parameters.</li>
+ *   <li>{@code from} must be before {@code to}, checked in {@link SamplesService} since it involves two
+ *       parameters.</li>
  * </ul>
  * All are a 400 with {@code errors: [{field, message}]}. A query PostgreSQL cancels for running past
  * {@code miniwsa.samples.query-timeout} is a 503.
@@ -49,10 +47,10 @@ public class SamplesController {
     static final int DEFAULT_LIMIT = 20;
     static final int MAX_LIMIT = 100;
 
-    private final EventStore eventStore;
+    private final SamplesService samplesService;
 
-    public SamplesController(EventStore eventStore) {
-        this.eventStore = eventStore;
+    public SamplesController(SamplesService samplesService) {
+        this.samplesService = samplesService;
     }
 
     @GetMapping("/v1/events/samples")
@@ -65,12 +63,6 @@ public class SamplesController {
             @RequestParam(name = "action", required = false) Action action,
             @RequestParam(name = "limit", defaultValue = "" + DEFAULT_LIMIT) @Min(1) @Max(MAX_LIMIT) int limit,
             @RequestParam(name = "offset", defaultValue = "0") @Min(0) int offset) {
-        Instant fromInstant = from == null ? null : from.toInstant();
-        Instant toInstant = to == null ? null : to.toInstant();
-        if (fromInstant != null && toInstant != null && !fromInstant.isBefore(toInstant)) {
-            throw new InvalidQueryParametersException(List.of(new QueryParamError("from", "must be before to")));
-        }
-        SampleQuery query = new SampleQuery(configId, fromInstant, toInstant, category, action, limit, offset);
-        return eventStore.findSamples(query);
+        return samplesService.samples(configId, from, to, category, action, limit, offset);
     }
 }

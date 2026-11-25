@@ -1,5 +1,6 @@
 package com.miniwsa.api;
 
+import com.miniwsa.stats.StatsService;
 import com.miniwsa.stats.Timeseries;
 import com.miniwsa.stats.Timeseries.Bucket;
 import com.miniwsa.stats.TimeseriesInterval;
@@ -8,6 +9,7 @@ import com.miniwsa.storage.ReadQueryTimeoutException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -37,6 +39,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(StatsController.class)
+@Import(StatsService.class)
 class StatsTimeseriesControllerTest {
 
     private static final String URL = "/v1/stats/timeseries";
@@ -255,7 +258,7 @@ class StatsTimeseriesControllerTest {
         for (TimeseriesInterval interval : TimeseriesInterval.values()) {
             Instant to = FROM.plus(interval.duration().multipliedBy(Timeseries.MAX_BUCKETS + 1));
             expectOneError(get(URL).param("from", FROM_TEXT).param("to", to.toString())
-                    .param("interval", interval.label()), "interval", StatsController.TOO_MANY_BUCKETS_MESSAGE);
+                    .param("interval", interval.label()), "interval", StatsService.TOO_MANY_BUCKETS_MESSAGE);
         }
     }
 
@@ -266,7 +269,7 @@ class StatsTimeseriesControllerTest {
         Instant from = FROM.plusSeconds(30);
         Instant to = from.plus(Duration.ofMinutes(Timeseries.MAX_BUCKETS));
         expectOneError(get(URL).param("from", from.toString()).param("to", to.toString()).param("interval", "1m"),
-                "interval", StatsController.TOO_MANY_BUCKETS_MESSAGE);
+                "interval", StatsService.TOO_MANY_BUCKETS_MESSAGE);
 
         // Ending on the bucket boundary instead keeps it at MAX_BUCKETS.
         stubEmpty();
@@ -278,7 +281,7 @@ class StatsTimeseriesControllerTest {
 
     @Test
     void theCapMessageIsTheDocumentedOne() {
-        assertThat(StatsController.TOO_MANY_BUCKETS_MESSAGE)
+        assertThat(StatsService.TOO_MANY_BUCKETS_MESSAGE)
                 .isEqualTo("too many buckets for this range: at most 2880; use a larger interval or a shorter range");
     }
 

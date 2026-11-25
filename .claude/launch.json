@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "miniwsa",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "C:\\Users\\omern\\OneDrive\\Desktop\\Akamai\\MiniWSA\\mvnw.cmd", "-f", "C:\\Users\\omern\\OneDrive\\Desktop\\Akamai\\MiniWSA\\pom.xml", "spring-boot:run", "-Dspring-boot.run.jvmArguments=-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"],
+      "port": 8080
+    },
+    {
+      "name": "miniwsa-8081",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "C:\\Users\\omern\\OneDrive\\Desktop\\Akamai\\MiniWSA\\mvnw.cmd", "-f", "C:\\Users\\omern\\OneDrive\\Desktop\\Akamai\\MiniWSA\\pom.xml", "spring-boot:run", "-Dspring-boot.run.arguments=--server.port=8081"],
+      "port": 8081
+    }
+  ]
+}
