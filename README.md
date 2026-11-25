@@ -11,8 +11,6 @@ Mini Security Analytics Pipeline: a Spring Boot service that ingests security ev
 - **Docker** with Docker Compose, and Docker running. Docker runs PostgreSQL and Redis for the service, and the tests start their own PostgreSQL in Docker too.
 - Ports **8080** (the service), **5432** (PostgreSQL) and **6379** (Redis) free on your machine.
 
-You don't need Maven: the repository includes the Maven wrapper (`mvnw`), which downloads the right Maven version on first use. The first build also downloads the dependencies, so it takes a few minutes.
-
 The steps below work in **Bash** (Linux, macOS, or Git Bash on Windows) and in **Windows PowerShell**. Where the command differs, each shell gets its own; otherwise one command is shown for both. In PowerShell, `./mvnw` becomes `.\mvnw.cmd` and `curl` becomes `curl.exe`; PowerShell's own `curl` is a different command and fails with `The URI prefix is not recognized`.
 
 You need **two terminal windows** (Bash or PowerShell). The service runs in the foreground and holds its window until you stop it, so:
