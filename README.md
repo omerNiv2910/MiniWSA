@@ -65,19 +65,27 @@ curl localhost:8080/actuator/health
 
 The answer includes `"status":"UP"`.
 
-**6. Generate test data and send it in.** The repository has no data file, so first create one with the [data generator](#data-generator) (1,000 random events from the last 7 days, written to `data/events.json`):
+**6. Generate test data and send it in.** The repository has no data file, so first create one with the data generator. It runs from the jar built in step 3, so there is nothing else to set up. It writes random events from the last 7 days to `data/events.json`, and 20% of them are one attack wave: a burst from one IP hitting one path within 5 seconds. Set `--count` to the number of events you want, from 1 to 20,000 (here 5,000):
 
 ```bash
-java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher
+java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher --count 5000
 ```
 
-Then send the file to the service:
+It prints `wrote 5000 events to data/events.json`. Leave out `--count` to get the default of 1,000. Keep the quotes around `"-Dloader.main=..."`, or PowerShell splits the argument and Java fails with `Could not find or load main class`.
+
+Right after it, send the file to the service:
 
 ```bash
-curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data @data/events.json
+curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data-binary @data/events.json
 ```
 
-It answers `201` with `"accepted": 1000`. The events are stored in the background within a second or two.
+In PowerShell, use `curl.exe` and keep the quotes around `"@data/events.json"`. Without them PowerShell reads `@data` as one of its own variables, sends the wrong body, and the service answers `400 Request body is not valid JSON`:
+
+```powershell
+curl.exe -X POST localhost:8080/v1/events/ingest -H "Content-Type: application/json" --data-binary "@data/events.json"
+```
+
+It answers `201` with `"accepted"` equal to your count (`"accepted": 5000` here). The events are stored in the background within a second or two.
 
 **7. Read the results:**
 
@@ -92,71 +100,6 @@ curl localhost:8080/v1/events/samples
 **8. Stop everything:** `Ctrl+C` in the service's terminal stops the service, and `docker compose down -v` stops PostgreSQL and Redis and deletes their data.
 
 Connection settings can be overridden with `DATABASE_URL` (JDBC URL), `DATABASE_USER`, `DATABASE_PASSWORD`, `REDIS_HOST` and `REDIS_PORT`; the defaults match `docker-compose.yml`.
-
-## Data generator
-
-`com.miniwsa.generator.GeneratorCli` makes a configurable number of random security events over the last 7 days and writes them to a file as a JSON array, a body `POST /v1/events/ingest` accepts as-is. It does not call the API or touch the database, and it runs on its own: the app, PostgreSQL and Redis don't need to be up.
-
-### How to run it
-
-Run these from the project root.
-
-**1. Build the jar.** Step 2 runs the generator from this jar, so build it before the first run, and build it again whenever you change the generator's code; otherwise step 2 still runs the old version.
-
-```bash
-./mvnw -q package -DskipTests
-```
-
-On Windows PowerShell use `.\mvnw.cmd -q package -DskipTests`.
-
-**2. Run the generator:**
-
-```bash
-java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher
-```
-
-It prints `wrote 1000 events to data/events.json`. The jar's normal entry point starts the Spring app; `-Dloader.main=...GeneratorCli` with `PropertiesLauncher` runs the generator's `main` instead. Keep the quotes around `"-Dloader.main=..."`: without them PowerShell splits the argument at the dot and Java fails with `Could not find or load main class .main=...`.
-
-Options go at the end of the command:
-
-```bash
-# 5,000 events into data/my-events.json
-java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher --count 5000 --output data/my-events.json
-
-# show the options
-java -cp target/miniwsa-0.0.1-SNAPSHOT.jar "-Dloader.main=com.miniwsa.generator.GeneratorCli" org.springframework.boot.loader.launch.PropertiesLauncher --help
-```
-
-From an IDE you can instead run `GeneratorCli.main` directly, with the options as program arguments (e.g. `--count 5000 --output data/my-events.json`) and the project root as the working directory.
-
-**3. Optional: feed the file to the ingestion API** while the app is running:
-
-```bash
-curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' --data @data/events.json
-```
-
-### Options
-
-Both options are optional; each one you leave out uses its default.
-
-| Option | Default | Meaning |
-|---|---|---|
-| `--count <n>` | `1000` | How many events to generate, a whole number from 1 to 20,000. Exactly this many events are written: 20% of them form the attack wave, the rest are background. The upper limit is a fifth of the server's default queue capacity, so one file fits in one ingest request even while the server is still storing earlier events. |
-| `--output <file>` | `data/events.json` | The file the events are written to, relative to the folder you run from (or an absolute path). Missing folders are created, and an existing file is overwritten. |
-
-If an option is given twice, the last value wins. A bad value (e.g. `--count 0` or `--count abc`), an unknown option, or an option without a value prints an error and the usage text.
-
-Exit codes: `0` done, `1` the file could not be written, `2` bad option.
-
-**What the data looks like:**
-
-- **Random from lists:** `ReferenceData` holds one list per field: config ids, policy ids, client IPs, hostnames, paths, methods, user agents, rule names, rule messages, severities, categories, actions and geo locations. Every field of an event is picked at random from its own list, independently of the other fields. The event id and the rule id are random UUIDs; event ids never repeat within a run.
-- **Computed fields:** `requestSize` is 200 to 2,000 bytes; `responseSize` is 100 to 600 bytes for a `DENY` and 500 to 50,500 otherwise. The status code follows the action: a `DENY` gets `429` (rate limit), `503` (DoS) or `403`; anything else is mostly `200`, sometimes `404`, `302` or `500`.
-- **Attack wave (20% of the events):** one client IP and one path, picked at random, with all their timestamps within 5 seconds of one random moment in the week. Their other fields are random like any other event.
-- **Background (the rest):** everything random from the lists, timestamps spread over the whole week. No timestamp is in the future.
-- **Valid input:** every event passes the ingest validation. Server-set fields (`receivedAt`, `attackType`, `threatScore`) are never written.
-- **Time order:** the events are sorted by timestamp, so when it is fed to the API the server sees each IP's earlier events first. At most 20,000 events, a fifth of the server's default queue capacity, so one file fits in one request.
-
 
 ## Architecture
 
@@ -200,7 +143,7 @@ Two stores, each holding the kind of data it's good at:
 
 **Why Redis next to it**
 
-- **Shared by all instances.** Unlike an in-process map, the 10-minute IP window and the rate limit stay correct when the service runs on several instances.
+- **Shared by all instances.** In case of scailing into multi instances app, Unlike an in-process map, the 10-minute IP window and the rate limit stay correct when the service runs on several instances.
 - **Survives an app crash.** Redis runs as its own process, so if the app crashes, the counts in Redis are kept and the restarted app picks them up (each key still expires on its own TTL).
 
 **Another design choice: in-memory event queue**
