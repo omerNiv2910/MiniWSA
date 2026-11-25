@@ -12,10 +12,13 @@ import org.springframework.test.json.JsonCompareMode;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
+import java.util.List;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -192,6 +195,36 @@ class AlertingControllerTest {
         mvc.perform(post(URL).contentType(MediaType.TEXT_PLAIN).content("x"))
                 .andExpect(status().isUnsupportedMediaType());
         verifyNoInteractions(alertService);
+    }
+
+    // ---- evaluate ----
+
+    @Test
+    void evaluateReturnsTheFiringAlertsInTheStatusFormat() throws Exception {
+        when(alertService.evaluate()).thenReturn(List.of(
+                new AlertDefinition(1L, "SQLi burst", Category.INJECTION, 2, 5),
+                new AlertDefinition(3L, "Bots", Category.BOT, 10, 60)));
+
+        mvc.perform(get("/v1/alerts/evaluate"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(content().json("""
+                        {"status": 200, "message": "2 alert(s) firing", "alerts": [
+                          {"id": 1, "name": "SQLi burst", "category": "INJECTION", "events": 2, "windowMinutes": 5},
+                          {"id": 3, "name": "Bots", "category": "BOT", "events": 10, "windowMinutes": 60}
+                        ]}
+                        """, JsonCompareMode.STRICT));
+    }
+
+    @Test
+    void evaluateWithNothingFiringReturnsAnEmptyList() throws Exception {
+        when(alertService.evaluate()).thenReturn(List.of());
+
+        mvc.perform(get("/v1/alerts/evaluate"))
+                .andExpect(status().isOk())
+                .andExpect(content().json("""
+                        {"status": 200, "message": "0 alert(s) firing", "alerts": []}
+                        """, JsonCompareMode.STRICT));
     }
 
     // ---- helpers ----

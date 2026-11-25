@@ -30,8 +30,9 @@ import java.util.List;
  * Errors are problem details, which carry {@code "status": 400} the same way.
  * Each call adds a new rule; identical definitions are not merged.
  *
- * <p>{@code GET /v1/alerts/evaluate}: the rules firing now, as a JSON array of definitions ordered by
- * id ({@code []} when none fires). See {@link AlertService#evaluate}.
+ * <p>{@code GET /v1/alerts/evaluate}: the rules firing now, in the same shape as define:
+ * {@code {"status": 200, "message": "1 alert(s) firing", "alerts": [{"id": 1, ...}]}}, the alerts
+ * ordered by id ({@code "alerts": []} when none fires). See {@link AlertService#evaluate}.
  */
 @RestController
 @RequestMapping("/v1/alerts")
@@ -56,7 +57,11 @@ public class AlertingController {
     }
 
     @GetMapping("/evaluate")
-    public List<AlertDefinition> evaluate() {
-        return alertService.evaluate();
+    public ObjectNode evaluate() {
+        List<AlertDefinition> firing = alertService.evaluate();
+        return jsonMapper.createObjectNode()
+                .put("status", HttpStatus.OK.value())
+                .put("message", firing.size() + " alert(s) firing")
+                .set("alerts", jsonMapper.valueToTree(firing));
     }
 }
